@@ -1,0 +1,13 @@
+@import url('./bar-standard.css');
+
+:root {
+  --bar-bg: #fff7f0;
+  --bar-panel: #fffaf6;
+  --bar-border: #f4d7c5;
+  --bar-text: #4a2b17;
+  --bar-muted: #9a6b52;
+  --bar-accent: #ff8127;
+  --bar-accent-soft: rgba(255, 129, 39, 0.15);
+  --bar-danger: #ef4444;
+  --bar-shadow: 0 8px 24px rgba(120, 64, 32, 0.12);
+}

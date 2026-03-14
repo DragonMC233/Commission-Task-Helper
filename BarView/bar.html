@@ -1,0 +1,179 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" data-theme="standard">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>委托排单助手 · 甘特图模式</title>
+  <script defer src="../MainView/tailwind4.1.13.js"></script>
+  <script>
+    window.injectInfo = { env: "PROD" };
+  </script>
+  <link id="theme-stylesheet" href="../MainView/标准.css" rel="stylesheet">
+  <script>
+    window.artifactId = "flashapp-f3b42c12ac0f421e";
+    window.artifactVersion = "65";
+    window.trace_id = "219ff71117660771533985446e6f7c";
+  </script>
+  <link rel="stylesheet" href="../MainView/base-style.css">
+  <link id="bar-theme-stylesheet" rel="stylesheet" href="bar-standard-tw.css?v=20260218a">
+</head>
+<body class="barview-body">
+  <div class="barview-root">
+    <header class="barview-toolbar">
+      <div class="toolbar-title">
+        <div class="title-main">委托排单助手</div>
+        <div class="title-sub">甘特图模式</div>
+      </div>
+      <div class="header-controls">
+        <div class="control-group">
+          <button class="icon-btn" id="btn-undo" title="撤回 (Ctrl+Z)">
+            <span class="material-icons">undo</span>
+          </button>
+          <button class="icon-btn" id="btn-redo" title="重做 (Ctrl+Y / Ctrl+Shift+Z)">
+            <span class="material-icons">redo</span>
+          </button>
+          <button class="icon-btn" id="btn-history" title="历史快照">
+            <span class="material-icons">history</span>
+          </button>
+          <button class="icon-btn" id="btn-recycle" title="回收站">
+            <span class="material-icons">delete</span>
+          </button>
+        </div>
+
+        <div class="control-group">
+          <button class="icon-btn" id="btn-edit" title="快速编辑">
+            <span class="material-icons">brush</span>
+          </button>
+          <button class="icon-btn" id="btn-save" title="保存更改">
+            <span class="material-icons">save</span>
+          </button>
+        </div>
+
+        <div class="control-group">
+          <button class="icon-btn" id="btn-go-cards" title="前往任务卡片模式">
+            <span class="material-icons">open_in_new</span>
+          </button>
+          <button class="icon-btn" id="btn-settings" title="设置">
+            <span class="material-icons">settings</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <section class="barview-settings-modal modal-backdrop fixed inset-0 z-50 hidden flex items-center justify-center p-4" id="settings-modal">
+      <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+        <div class="flex-1 overflow-y-auto p-6">
+          <h2 class="text-xl font-bold text-stone-800 mb-4">BarView 设置</h2>
+
+          <!-- BarView 特有设置 -->
+          <section class="mb-4">
+            <h3 class="text-lg font-semibold text-stone-800 mb-3">甘特图设置</h3>
+
+            <div class="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm text-stone-700">鼠标滚轮上下滚动映射为左右滚动</div>
+                <div class="text-xs text-stone-500">开启后使用鼠标滚轮可以水平滚动甘特图</div>
+              </div>
+              <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" id="opt-wheel-scroll" class="h-4 w-4">
+              </label>
+            </div>
+
+            <div class="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div class="text-sm text-stone-700">前往任务卡片模式在新标签页打开</div>
+                <div class="text-xs text-stone-500">开启后点击"前往任务卡片"将在新标签页打开主界面</div>
+              </div>
+              <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" id="opt-open-new-tab" class="h-4 w-4">
+              </label>
+            </div>
+          </section>
+
+          <!-- 页面样式切换 -->
+          <section class="mb-4">
+            <h3 class="text-lg font-semibold text-stone-800 mb-3">页面样式</h3>
+            <div class="flex items-center gap-4">
+              <label class="inline-flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="theme-select" id="theme-warm" value="warm" class="h-4 w-4">
+                <span class="text-sm text-stone-700">暖色</span>
+              </label>
+              <label class="inline-flex items-center gap-2 cursor-pointer">
+                <input type="radio" name="theme-select" id="theme-standard" value="standard" class="h-4 w-4">
+                <span class="text-sm text-stone-700">标准</span>
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="modal-footer !m-0 !p-6 pt-0">
+          <div class="flex gap-3">
+            <button id="close-settings-btn" class="flex-1 px-4 py-2 border border-stone-300 text-stone-700 rounded-lg hover:bg-stone-50">关闭</button>
+            <button id="save-settings-btn" class="flex-1 px-4 py-2 btn-save">保存</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main class="barview-main">
+      <div class="gantt-scroll" id="gantt-scroll">
+        <div class="gantt-content" id="gantt-content">
+          <div class="gantt-timeline" id="gantt-timeline">
+            <div class="timeline-row timeline-year" id="timeline-year"></div>
+            <div class="timeline-row timeline-month" id="timeline-month"></div>
+            <div class="timeline-row timeline-day-label" id="timeline-day-label"></div>
+            <div class="timeline-row timeline-day-ticks" id="timeline-day-ticks"></div>
+          </div>
+          <div class="gantt-grid" id="gantt-grid"></div>
+          <svg class="gantt-links" id="gantt-links"></svg>
+          <div class="gantt-bars" id="gantt-bars"></div>
+          <div class="insert-indicator" id="insert-indicator" aria-hidden="true"></div>
+          <div class="selection-rect" id="selection-rect" aria-hidden="true"></div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="history-panel" id="history-panel" aria-hidden="true">
+      <div class="history-header">
+        <div class="history-title">编辑历史快照</div>
+        <button class="history-close" id="history-close">×</button>
+      </div>
+      <div class="history-list" id="history-list"></div>
+    </aside>
+
+    <aside class="recycle-panel" id="recycle-panel" aria-hidden="true">
+      <div class="history-header">
+        <div class="history-title">回收站</div>
+        <button class="history-close" id="recycle-close">×</button>
+      </div>
+      <div class="recycle-list" id="recycle-list"></div>
+    </aside>
+
+    <button id="add-task-btn" class="add-button fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center" title="添加任务">
+      <span class="material-icons">add</span>
+    </button>
+
+    <div id="image-modal" class="modal-backdrop fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl w-full max-w-2xl shadow-2xl modal-content">
+        <div class="p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 id="image-modal-title" class="text-xl font-bold text-stone-800"></h2>
+            <button id="close-image-modal" class="text-stone-400 hover:text-stone-600 transition-colors">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+          <div class="text-center modal-body">
+            <img id="modal-image" class="object-contain rounded-lg" alt="任务图片">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="../scripts/task-utils.js?v=20260218a"></script>
+  <script src="../scripts/task-card-shared.js?v=20260218a"></script>
+  <script src="../scripts/task-modal-shared.js?v=20260218a"></script>
+  <script>TaskModalController.injectHTML();</script>
+  <script src="bar.js?v=20260218a"></script>
+</body>
+</html>

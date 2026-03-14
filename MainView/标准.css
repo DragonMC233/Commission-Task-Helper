@@ -1,0 +1,2001 @@
+/*3.1.2*/
+
+/* ============================================================================
+ * 1. 根变量与动画（root）
+ * ============================================================================ */
+:root {
+  --modal-backdrop-blur: 5px;
+  --modal-backdrop-bg: rgba(0, 0, 0, 0.5);
+  --modal-content-max-height: 90vh;
+  --modal-footer-bg: #ffffff;
+  /* Base ring color for the site (centralized) */
+  --base-ring: var(--color-blue-500);
+}
+
+/* Utility: support elements that use Tailwind-like classes
+   e.g. class="... focus:outline-none focus:ring-2 focus:ring-blue-500" */
+/* Centralized: default ring uses --base-ring */
+.use-base-ring:focus {
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--base-ring), var(--tw-shadow, 0 0 #0000);
+  outline: none;
+}
+
+/* 错位时间的红色提示环 */
+.input-ring-error {
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--color-red-400), var(--tw-shadow, 0 0 #0000);
+  border-color: var(--color-red-400);
+  outline: none;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes pulse-today {
+
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.02);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 排单模式选中样式（标准主题）
+   仅定义视觉边框/环，颜色来源于本主题的 --base-ring 变量 */
+.dep-selected {
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--base-ring), var(--tw-shadow, 0 0 #0000);
+  border-color: var(--base-ring);
+  color: var(--base-ring);
+}
+#task-auto-schedule,
+#task-auto-calc-end {
+  opacity: 1;
+}
+
+/* ============================================================================
+ * 2. 页面级与全局（body / 容器 / 模态 / 表单）
+ * ============================================================================ */
+body {
+  background: var(--color-gray-50);
+  min-height: 100vh;
+}
+
+#container {
+  margin: 0 !important;
+}
+
+#smart-recommendations {
+  display: none;
+}
+
+#empty-state {
+  display: block;
+}
+
+.modal-backdrop {
+  backdrop-filter: none;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-content {
+  max-height: var(--modal-content-max-height);
+  overflow-y: auto;
+}
+
+.modal-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--modal-footer-bg);
+  border-top: 1px solid #f3f4f6;
+  margin: 0 -1rem -1rem;
+  padding: 1rem;
+}
+
+#page-settings-modal {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-track {
+  background: #e2e8f0;
+  height: 6px;
+  border-radius: 3px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: #667eea;
+  border-radius: 50%;
+  cursor: pointer;
+  margin-top: -6px;
+}
+
+input[type="range"]::-moz-range-track {
+  background: #e2e8f0;
+  height: 6px;
+  border-radius: 3px;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: #667eea;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+/* 输入框焦点色：默认主题使用主题 ring 色（蓝色） */
+#quick-add-type-name:focus,
+#quick-add-source-name:focus,
+#new-type-name:focus,
+#new-source-name:focus,
+#new-preset-node-name:focus,
+.type-name-input:focus,
+.source-name-input:focus,
+.preset-node-name-input:focus {
+  --tw-ring-opacity: 1;
+  /* Use the theme ring color (standard theme) */
+  --tw-ring-color: var(--base-ring);
+  outline: none;
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color),
+    var(--tw-shadow, 0 0 #0000);
+}
+
+#quick-add-type-name:focus-visible,
+#quick-add-source-name:focus-visible,
+#new-type-name:focus-visible,
+#new-source-name:focus-visible,
+#new-preset-node-name:focus-visible,
+.type-name-input:focus-visible,
+.source-name-input:focus-visible,
+.preset-node-name-input:focus-visible {
+  --tw-ring-opacity: 1;
+  --tw-ring-color: var(--base-ring);
+  outline: none;
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color),
+    var(--tw-shadow, 0 0 #0000);
+}
+
+#timer-hours:focus,
+#timer-minutes:focus {
+  --tw-ring-opacity: 1;
+  --tw-ring-color: var(--base-ring);
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color),
+    var(--tw-shadow, 0 0 #0000);
+  border-color: var(--tw-ring-color);
+}
+
+#page-settings-modal input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 10px;
+  width: 100%;
+  margin: 0;
+}
+
+#page-settings-modal input[type="range"]::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg,
+      #6366f1 var(--val, 100%),
+      #e5e7eb var(--val, 100%));
+}
+
+#page-settings-modal input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #4f46e5;
+  border: 3px solid #fff;
+  box-shadow: 0 6px 14px rgba(79, 70, 229, 0.18);
+  margin-top: -5px;
+  cursor: pointer;
+}
+
+#page-settings-modal input[type="range"]::-moz-range-track {
+  height: 8px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg,
+      #6366f1 var(--val, 100%),
+      #e5e7eb var(--val, 100%));
+}
+
+#page-settings-modal input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #4f46e5;
+  border: 3px solid #fff;
+  box-shadow: 0 6px 14px rgba(79, 70, 229, 0.18);
+  cursor: pointer;
+}
+
+#page-settings-modal input[type="range"]::-ms-track {
+  height: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: transparent;
+}
+
+#page-settings-modal .hsv-value-dot {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #4f46e5;
+  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.12);
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+/* ============================================================================
+ * 3. 布局骨架（scrollbar/横竖屏/按钮）
+ * ============================================================================ */
+.left-panel::-webkit-scrollbar,
+.right-panel::-webkit-scrollbar {
+  width: 0;
+  background: transparent;
+}
+
+.left-panel,
+.right-panel {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.landscape-layout {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  overflow-x: hidden;
+  padding: 1rem;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.landscape-layout .left-panel {
+  flex: 0 0 400px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  position: sticky;
+  top: 0;
+  align-self: stretch;
+  height: 100vh;
+  -webkit-overflow-scrolling: touch;
+}
+
+.landscape-layout .right-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+  height: 100vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.landscape-layout header {
+  flex-shrink: 0;
+}
+
+.landscape-layout .stats-container {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.landscape-layout .right-panel>section:first-child {
+  display: block;
+}
+
+.landscape-layout .right-panel>section:nth-child(2) {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.landscape-layout .task-card {
+  margin: 0;
+  height: fit-content;
+  opacity: 0;
+  pointer-events: none;
+  width: auto;
+}
+
+.landscape-layout main {
+  padding: 0;
+  flex: 1;
+  overflow-y: visible;
+}
+
+.landscape-layout .empty-state {
+  grid-column: 1 / -1;
+  justify-self: center;
+}
+
+.landscape-layout .task-list {
+  position: relative;
+  padding: 0;
+  margin-bottom: 2rem;
+}
+
+.landscape-layout .task-card.is-laid-out {
+  opacity: 1;
+  pointer-events: auto;
+  width: var(--card-width, auto);
+}
+
+.portrait-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.portrait-layout .task-card {
+  position: relative !important;
+  top: auto !important;
+  left: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  margin-bottom: 1rem;
+  transform: none !important;
+  opacity: 1 !important;
+}
+
+#add-task-btn {
+  position: fixed !important;
+  bottom: 1.5rem !important;
+  right: 1.5rem !important;
+  z-index: 30 !important;
+  display: flex !important;
+  background-color: #3b82f6;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+}
+
+/* ============================================================================
+ * 4. 左侧区域
+ *    4.1 标题（无额外样式）
+ *    4.2 日历
+ *    4.3 月度统计（无额外样式）
+ *    4.4 工作量分析（无额外样式）
+ * ============================================================================ */
+/* 日历工具栏 */
+.calendar-toolbar {
+  row-gap: 8px;
+}
+
+/* 日历模式切换 */
+.calendar-mode-toggle {
+  white-space: nowrap;
+  color: var(--color-blue-700);
+}
+
+/* 日历日程条切换按钮颜色 */
+#calendar-mode-toggle[data-mode="timeline"] {
+  background: var(--color-emerald-50);
+  color: var(--color-emerald-700);
+  border-color: var(--color-emerald-100);
+}
+
+#calendar-mode-toggle[data-mode="timeline"]:hover {
+  background: var(--color-emerald-100);
+}
+
+/*截止日期按钮颜色*/
+#calendar-mode-toggle[data-mode="deadline"],
+#calendar-mode-toggle:not([data-mode]) {
+  background: var(--color-blue-50);
+  color: var(--color-blue-700);
+  border-color: var(--color-blue-100);
+}
+
+#calendar-mode-toggle[data-mode="deadline"]:hover,
+#calendar-mode-toggle:not([data-mode]):hover {
+  background: var(--color-blue-100);
+}
+
+/* 日程任务条 */
+.calendar-task-bars {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  text-align: left;
+}
+
+/* 日历任务条默认样式 */
+.calendar-task-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  background: rgba(0, 0, 0, 0.04);
+  color: #111827;
+}
+
+.calendar-task-bar__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.calendar-task-bar__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 日历专用图标 */
+.icon-calendar {
+  color: #f03a17;
+}
+
+/* 日期标签 */
+.calendar-date-label {
+  font-weight: 600;
+}
+
+/* 日历网格 */
+#calendar-grid-wrapper {
+  position: relative;
+}
+
+/* 月度统计：为数据驱动的统计组件设置颜色（通过 data-stat 与 #monthly-xxx 映射） */
+[data-stat="tasks"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="tasks"] [data-stat-count],
+#monthly-task-count {
+  color: var(--color-sky-400);
+}
+
+[data-stat="payment"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="payment"] [data-stat-count],
+#monthly-payment-count {
+  color: var(--color-sky-400);
+}
+
+[data-stat="hourly"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="hourly"] [data-stat-count],
+#monthly-hourly-rate {
+  color: var(--color-sky-400);
+}
+
+/* 周视图 */
+.calendar-week {
+  margin-bottom: 0;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 8px 0 8px;
+  background: #fff;
+}
+
+/* 周日期 */
+.week-dates {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.timeline-mode .week-dates {
+  margin-bottom: 6px;
+}
+
+/* 星期标题统一样式 */
+.weekday-title {
+  text-align: center;
+  font-size: 0.75rem;
+  /* 对应 Tailwind 的 text-xs */
+  font-weight: 500;
+  /* 对应 Tailwind 的 font-medium */
+  color: var(--color-stone-500);
+}
+
+/* 时间轴 */
+.week-timeline {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  row-gap: 4px;
+  align-items: center;
+  overflow: hidden;
+}
+
+/* 时间轴图层 */
+#calendar-timeline-layer {
+  pointer-events: none;
+  display: grid;
+  position: absolute;
+  inset: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: 28px;
+  gap: 4px;
+  padding: 18px 1px 4px;
+  align-content: start;
+}
+
+/* 时间轴图层隐藏 */
+#calendar-timeline-layer.hidden {
+  display: none;
+}
+
+/* 时间轴条 */
+.calendar-timeline-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 9999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  min-height: 22px;
+  box-shadow: none;
+  background: rgba(0, 0, 0, 0.04);
+  color: #0f172a;
+  pointer-events: auto;
+  position: static;
+  width: auto;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* 已完成任务条透明化 */
+.calendar-timeline-bar.completed {
+  opacity: calc(var(--completed-task-opacity, 0.8) * 0.5) !important;
+}
+
+.calendar-timeline-bar__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+/* 日历日期单元格 */
+.calendar-cell {
+  min-height: 36px;
+  position: relative;
+  transition: all 0.2s ease;
+  z-index: 2;
+  text-align: center;
+  padding: 8px;
+  font-size: 0.875rem;
+  /* text-sm */
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* 占位日期（上月/下月） */
+.calendar-placeholder {
+  text-align: center;
+  padding: 8px;
+  font-size: 0.875rem;
+  /* text-sm */
+  color: var(--color-stone-300);
+  border-radius: 6px;
+}
+
+.calendar-cell:hover {
+  transform: scale(1.05);
+  z-index: 10;
+  background: var(--color-stone-100);
+}
+
+.calendar-cell.today {
+  box-shadow: 0 2px 8px rgba(56, 189, 248, 0.3);
+  animation: pulse-today 2s infinite;
+  background: var(--color-sky-100);
+  color: var(--color-sky-700);
+  font-weight: 700;
+}
+
+.calendar-cell.has-task {
+  font-weight: 500;
+  background: var(--color-blue-50);
+  color: var(--color-blue-700);
+}
+
+.calendar-cell.has-task:hover {
+  background: var(--color-blue-100);
+}
+
+/* 周视图日期单元格默认样式（排除 .calendar-cell） */
+.calendar-cell {
+  text-align: center;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--color-stone-50);
+}
+
+/* 任务指示点（小红点） */
+.task-indicator {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: #ef4444;
+}
+
+.calendar-cell.has-task {
+  font-weight: 500;
+}
+
+.calendar-cell.has-task:hover {
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.task-indicator {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* 日期导航按钮 */
+.calendar-nav-btn {
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.calendar-nav-btn:hover {
+  transform: scale(1.05);
+}
+
+.calendar-nav-btn:active {
+  transform: scale(0.95);
+}
+
+/* 进度环 */
+.progress-ring {
+  transform: rotate(-90deg);
+}
+
+/* 月度统计：为数据驱动的统计组件设置颜色（通过 data-stat 与 #monthly-xxx 映射） */
+[data-stat="tasks"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="tasks"] [data-stat-count],
+#monthly-task-count {
+  color: var(--color-sky-400);
+}
+
+[data-stat="payment"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="payment"] [data-stat-count],
+#monthly-payment-count {
+  color: var(--color-sky-400);
+}
+
+[data-stat="hourly"] {
+  background: var(--color-sky-50);
+}
+
+[data-stat="hourly"] [data-stat-count],
+#monthly-hourly-rate {
+  color: var(--color-sky-400);
+}
+
+/* 月度统计 */
+.monthly-stats-card {
+  background: var(--color-white);
+  border: 1px solid var(--color-stone-100);
+}
+
+.monthly-stats-card .monthly-stats-header:hover {
+  background: var(--color-stone-50);
+}
+
+.monthly-stats-icon {
+  color: var(--color-sky-400);
+}
+
+.monthly-stats-chevron {
+  color: var(--color-stone-600);
+}
+
+/* 月度统计 - 平台收入列表 */
+.platform-stats-wrapper {
+  padding: 0 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.platform-stats-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+  color: var(--color-stone-500);
+}
+
+.platform-stats-title {
+  font-weight: 600;
+  color: var(--color-stone-700);
+}
+
+.platform-stats-meta {
+  color: var(--color-stone-500);
+}
+
+.platform-stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.platform-stat-card {
+  border-radius: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--color-stone-50);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.platform-stat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.platform-stat-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+  color: var(--color-stone-900);
+}
+
+.platform-stat-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  background: var(--color-stone-400);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+}
+
+.platform-stat-payment {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--color-stone-900);
+  font-variant-numeric: tabular-nums;
+}
+
+.platform-stat-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--color-stone-600);
+}
+
+.platform-stat-percent {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-stone-700);
+}
+
+.platform-stat-abandoned {
+  font-size: 0.7rem;
+  color: var(--color-stone-400);
+  font-weight: 400;
+}
+
+.platform-stat-progress {
+  height: 6px;
+  margin-top: 0.4rem;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.platform-stat-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+  background: var(--color-sky-400);
+}
+
+.platform-stat-empty {
+  color: var(--color-stone-400);
+  font-size: 0.75rem;
+  padding: 0.2rem 0.25rem 0.4rem;
+}
+
+/* 标题通用颜色（用于月度统计 / 推荐面板等） */
+.section-title {
+  color: var(--color-stone-800);
+}
+
+/* 工作量分析面板 */
+.recommendations-card {
+  background: var(--color-white);
+  border: 1px solid var(--color-stone-100);
+}
+
+.recommendations-card .recommendations-header:hover {
+  background: var(--color-stone-50);
+}
+
+.recommendations-chevron {
+  color: var(--color-stone-600);
+}
+
+/* 工作量分析面板 */
+[data-rec="total-remaining-hours"] {
+  background: var(--color-blue-50);
+}
+
+[data-rec="total-remaining-hours"] #total-remaining-hours {
+  color: var(--color-blue-600);
+}
+
+[data-rec="daily-recommended-hours"] {
+  background: var(--color-green-50);
+}
+
+[data-rec="daily-recommended-hours"] #daily-recommended-hours {
+  color: var(--color-green-600);
+}
+
+[data-rec="days-remaining"] {
+  background: var(--color-orange-50);
+}
+
+[data-rec="days-remaining"] #days-remaining {
+  color: var(--color-orange-600);
+}
+
+[data-rec] .text-xs,
+[data-rec] [data-rec-label] {
+  color: var(--color-stone-600);
+}
+
+/* 推荐项按类型的映射（左侧智能推荐卡片） */
+[data-rec-type="fun"] {
+  background: var(--color-blue-50);
+}
+
+[data-rec-type="fun"] .material-icons,
+[data-rec-type="fun"] .text-xs,
+[data-rec-type="fun"] .text-sm {
+  color: var(--color-blue-700);
+}
+
+[data-rec-type="urgent"] {
+  background: var(--color-red-50);
+}
+
+[data-rec-type="urgent"] .material-icons,
+[data-rec-type="urgent"] .text-xs,
+[data-rec-type="urgent"] .text-sm {
+  color: var(--color-red-700);
+}
+
+[data-rec-type="warning"] {
+  background: var(--color-orange-50);
+}
+
+[data-rec-type="warning"] .material-icons,
+[data-rec-type="warning"] .text-xs,
+[data-rec-type="warning"] .text-sm {
+  color: var(--color-orange-700);
+}
+
+[data-rec-type="info"] {
+  background: var(--color-blue-50);
+}
+
+[data-rec-type="info"] .material-icons,
+[data-rec-type="info"] .text-xs,
+[data-rec-type="info"] .text-sm {
+  color: var(--color-blue-700);
+}
+
+[data-rec-type="success"] {
+  background: var(--color-green-50);
+}
+
+[data-rec-type="success"] .material-icons,
+[data-rec-type="success"] .text-xs,
+[data-rec-type="success"] .text-sm {
+  color: var(--color-green-700);
+}
+
+[data-rec-type="default"] {
+  background: var(--color-stone-50);
+}
+
+[data-rec-type="default"] .material-icons,
+[data-rec-type="default"] .text-xs,
+[data-rec-type="default"] .text-sm {
+  color: var(--color-stone-700);
+}
+
+/* 工作量分析面板亮灯图标（左侧智能推荐区） */
+.icon-lightbulb {
+  color: var(--color-yellow-300);
+}
+
+/* ============================================================================
+ * 5. 右侧区域
+ *    5.1 统计卡片
+ *    5.2 类型操作条
+ *    5.3 任务列表与卡片
+ *    5.4 节点列表
+ * ============================================================================ */
+/* 统计卡片 */
+.stats-card {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  transition: all 0.3s ease;
+}
+
+.stats-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1),
+    inset 0 0 0 2px rgba(59, 130, 246, 1);
+}
+
+/* 统计卡片（使用 data-type-filter） */
+.stats-card[data-type-filter="all"] {
+  background: var(--color-white);
+  --tw-ring-color: var(--base-ring);
+}
+
+#stats-expand-btn {
+  background: var(--color-white);
+  border: 1px solid var(--color-stone-200);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  position: relative;
+  overflow: hidden;
+  --tw-ring-color: var(--base-ring);
+  --tw-ring-offset-color: #ffffff;
+}
+
+#stats-expand-btn:hover,
+#stats-expand-btn:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 15px rgba(0, 0, 0, 0.1),
+    inset 0 0 0 2px rgba(59, 130, 246, 1);
+}
+
+/* 统计卡与数据标签颜色（CSS 统一管理） */
+.stats-card .text-xs,
+.stats-card [data-stat-label] {
+  color: var(--color-stone-600);
+}
+
+[data-stat] .text-xs,
+[data-stat] [data-stat-label] {
+  color: var(--color-stone-600);
+}
+
+/* 类型操作条 */
+.types-actions {
+  position: relative;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  align-items: center;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.portrait-layout .types-actions {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (orientation: portrait) {
+  .types-actions {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+.types-actions>* {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.types-actions::-webkit-scrollbar {
+  height: 6px;
+}
+
+.types-actions::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+}
+
+.types-actions>*:focus {
+  outline: 2px solid rgba(59, 130, 246, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .types-actions>* {
+    transition: none !important;
+  }
+}
+
+/* 搜索面板（类型操作条内） */
+:root {
+  --types-search-width: 220px;
+  --types-search-closed-size: 40px;
+  --types-search-z: 20;
+  --types-search-anim: 450ms;
+}
+
+.types-search-wrap {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.types-search-btn {
+  width: var(--types-search-closed-size);
+  height: var(--types-search-closed-size);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  transition: transform 120ms linear;
+  background: rgba(255, 255, 255);
+  position: relative;
+  z-index: 25;
+}
+
+.types-search-panel {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--types-search-closed-size);
+  overflow: hidden;
+  border-radius: 50%;
+  transition: width var(--types-search-anim) ease,
+    border-radius var(--types-search-anim) ease,
+    opacity var(--types-search-anim) ease,
+    background var(--types-search-anim) ease,
+    backdrop-filter var(--types-search-anim) ease;
+  pointer-events: none;
+  opacity: 0;
+  background: rgba(255, 255, 255, 0);
+  backdrop-filter: blur(0px);
+}
+
+.types-search-wrap.open {
+  pointer-events: auto;
+}
+
+.types-search-wrap.open .types-search-panel {
+  width: var(--types-search-width);
+  height: var(--types-search-closed-size);
+  border-radius: calc(var(--types-search-closed-size) / 2);
+  opacity: 1;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  z-index: var(--types-search-z);
+  padding-left: 0.4em;
+}
+
+
+
+.types-search-panel input {
+  width: calc(100% - 1rem);
+  margin: 0.5rem;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: inherit;
+  font-size: 0.95rem;
+}
+
+/* 操作条按钮（右侧面板的类型/设置/隐藏/回收工具条） */
+.types-actions [data-variant="manage-types"] {
+  background: var(--color-blue-100);
+  color: var(--color-blue-700);
+}
+
+.types-actions [data-variant="manage-types"]:hover {
+  background: var(--color-blue-200);
+}
+
+.types-actions [data-variant="page-settings"] {
+  background: var(--color-indigo-100);
+  color: var(--color-indigo-700);
+}
+
+.types-actions [data-variant="page-settings"]:hover {
+  background: var(--color-indigo-200);
+}
+
+.types-actions [data-variant="toggle-hide-completed"] {
+  background: var(--color-lime-200);
+  color: var(--color-green-700);
+}
+
+.types-actions [data-variant="toggle-hide-completed"]:hover {
+  background: var(--color-lime-300);
+}
+
+/* toggle-recycle 默认样式（主界面，改为红色） */
+.types-actions [data-variant="toggle-recycle"] {
+  background: var(--color-red-100);
+  color: var(--color-red-700);
+}
+
+/* toggle-recycle 在回收站状态下（改为蓝色） */
+.types-actions [data-variant="toggle-recycle"][data-state="recycle"] {
+  background: var(--color-blue-100);
+  color: var(--color-blue-700);
+}
+
+.types-actions [data-variant="toggle-recycle"]:hover {
+  background: var(--color-red-200);
+}
+
+/* 任务列表卡片布局与动画（右侧任务面板） */
+
+/* Ensure task modal uses the default blue theme ring color */
+#task-modal {
+  --tw-ring-color: var(--base-ring);
+  --tw-ring-offset-color: #ffffff;
+}
+
+/* Selected ring inside task modal (default/blue theme) */
+#task-modal label:has(input[name="task-type"]:checked),
+#task-modal label:has(input[name="task-source"]:checked),
+#task-modal label:has(input[name="task-type"]:focus-visible),
+#task-modal label:has(input[name="task-source"]:focus-visible) {
+  --tw-ring-opacity: 1;
+  /* Define the ring color on the label itself (bypass @property inherits:false) */
+  --tw-ring-color: var(--base-ring);
+  /* Use an outer ring (box-shadow) instead of changing border-color */
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--tw-ring-color), var(--tw-shadow, 0 0 #0000);
+  outline: none;
+}
+
+.task-card {
+  /* Theme-specific ring color for task modal options */
+  --tw-ring-color: var(--base-ring);
+  --tw-ring-offset-color: #ffffff;
+  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 1rem;
+  padding: 0;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  --tx: 0px;
+  --ty: 0px;
+  transform: translate3d(var(--tx), var(--ty), 0) scale(0.9);
+  transition: transform 0.6s cubic-bezier(0.25, 1, 0.25, 1),
+    opacity 0.5s ease-out, box-shadow 0.6s cubic-bezier(0.25, 1, 0.25, 1);
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.task-card.is-laid-out {
+  opacity: 1;
+  transform: translate3d(var(--tx), var(--ty), 0) scale(1);
+}
+
+.task-card.is-laid-out:hover {
+  transform: translate3d(var(--tx), calc(var(--ty) - 5px), 0) scale(1.02) !important;
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.15) !important;
+}
+
+.task-card:hover {
+  transform: translateY(-5px) scale(1.02);
+  box-shadow: 0 12px 20px rgba(0, 0, 0, 0.15);
+  transition: transform 0.3s cubic-bezier(0.25, 1, 0.25, 1),
+    box-shadow 0.3s cubic-bezier(0.25, 1, 0.25, 1);
+}
+
+/* Disable hover / tap scale on portrait screens to avoid accidental zooming */
+@media (orientation: portrait) {
+
+  .task-card.is-laid-out:hover,
+  .task-card:hover,
+  .task-card:active,
+  .task-card.is-laid-out:active,
+  .task-card:focus,
+  .task-card.is-laid-out:focus {
+    transform: translate3d(var(--tx), var(--ty), 0) scale(1) !important;
+    box-shadow: none !important;
+    transition: none !important;
+    will-change: auto !important;
+  }
+}
+
+.task-card.completed {
+  opacity: 0 !important;
+  background: none;
+  pointer-events: none;
+}
+
+.task-card.completed * {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+.task-card.is-laid-out.completed {
+  opacity: var(--completed-task-opacity, 0.8) !important;
+  background: none;
+  pointer-events: auto;
+}
+
+.task-card.is-laid-out.completed * {
+  opacity: var(--completed-task-opacity, 0.8) !important;
+  pointer-events: auto;
+}
+
+.task-card.is-laid-out.completed .daily-time-badge,
+.task-card.is-laid-out.completed .deadline-badge {
+  color: white !important;
+}
+
+/* 任务预览覆盖：当通过日历预览已完成任务时，显示为不透明 */
+.task-preview-overlay .task-card.completed.preview-visible {
+  opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.95) !important;
+  pointer-events: auto !important;
+}
+
+.task-preview-overlay .task-card.completed.preview-visible * {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+
+.task-card.is-laid-out.completed .daily-time-badge {
+  background: #ffa23f !important;
+}
+
+.task-card.is-laid-out.completed .deadline-badge {
+  background: #34d399 !important;
+}
+
+/* 线性工时进度条基线（任务卡片内容区） */
+.progress-bar {
+  width: 100%;
+  min-height: 6px;
+  background: var(--color-stone-200);
+  border-radius: 9999px;
+  transition: background 0.3s ease;
+}
+
+/* 时间条/进度条等级颜色（任务卡片内容区） */
+.progress-bar[data-level="over"] {
+  background: var(--color-orange-500);
+}
+
+.progress-bar[data-level="complete"] {
+  background: var(--color-green-500);
+}
+
+.progress-bar[data-level="high"] {
+  background: var(--color-blue-500);
+}
+
+.progress-bar[data-level="mid"] {
+  background: var(--color-yellow-400);
+}
+
+.progress-bar[data-level="low"] {
+  background: var(--color-red-500);
+}
+
+/*加载后的任务卡片完成*/
+.task-card.is-laid-out.completed .progress-bar {
+  opacity: 1 !important;
+  background: #10b981 !important;
+}
+
+.task-card img {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+  border-radius: 0.5rem;
+  margin-top: 0;
+  min-height: 150px;
+  object-fit: contain;
+}
+
+.task-card-header {
+  padding: 1.5rem;
+  padding-block-end: 0;
+}
+
+.task-card-body {
+  padding: 1.5rem;
+  padding-top: 0;
+}
+
+
+.text-yellow-lemon {
+  color: #ffff00 !important;
+}
+
+/* 进度条背景 */
+.enhanced-progress-bar {
+  position: relative;
+  background: #e5e7eb;
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.enhanced-progress-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,
+      transparent,
+      rgba(255, 255, 255, 0.3),
+      transparent);
+  animation: shimmer 2s infinite;
+}
+
+/* 卡片侧边与预览弹窗内的圆形进度指示器 */
+.circular-progress {
+  position: relative;
+  width: 60px;
+  height: 60px;
+}
+
+.circular-progress svg {
+  transform: rotate(-90deg);
+}
+
+.circular-progress circle {
+  fill: none;
+  stroke-width: 4;
+}
+
+.circular-progress .background {
+  stroke: #e5e7eb;
+}
+
+.circular-progress .progress {
+  stroke: #10b981;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.circular-progress .text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 12px;
+  font-weight: bold;
+  color: #374151;
+}
+
+/* 任务卡片底部的计时按钮 */
+.timer-btn {
+  background: #ffa23f;
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  transition: background 0.2s ease, filter 0.2s ease;
+}
+
+.timer-btn.running {
+  background: #ef4444;
+}
+
+/* 未开始（未记录实际开始时间）：绿底白字 */
+.timer-btn.not-started {
+  background: #a3e635;
+  color: #ffffff;
+}
+
+.timer-btn:hover {
+  filter: brightness(0.95);
+}
+
+/* 任务卡片外部的时长调节箭头 */
+.decrement-hours-btn,
+.increment-hours-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 2px solid #ffffff;
+  background: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+}
+
+.decrement-hours-btn:hover,
+.increment-hours-btn:hover {
+  background: #ffffff;
+}
+
+/* 任务卡片中的工时调节区域容器 */
+.used-hours-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 工时输入：只在聚焦时显示主题 ring（简洁） */
+.used-hours-control .used-hours-input:focus,
+.used-hours-control .used-hours-input:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--base-ring), var(--tw-shadow, 0 0 #0000);
+}
+
+/* 每日工时药丸（任务卡片右侧栏） */
+.daily-time-badge {
+  background: #ffa23f;
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* 卡片的截止状态药丸 */
+.deadline-badge {
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* 截止状态药丸背景（由 data-status 控制） */
+.deadline-badge[data-status="overdue"] {
+  background: var(--color-red-500);
+  color: var(--color-white);
+  font-weight: bold;
+}
+
+.deadline-badge[data-status="imminent"] {
+  background: var(--color-red-600);
+  color: var(--color-white);
+  font-weight: bold;
+}
+
+.deadline-badge[data-status="today"] {
+  background: var(--color-orange-600);
+  color: var(--color-white);
+  font-weight: bold;
+}
+
+.deadline-badge[data-status="tomorrow"],
+.deadline-badge[data-status="urgent"] {
+  background: var(--color-yellow-400);
+  color: var(--color-white);
+  font-weight: bold;
+}
+
+.deadline-badge[data-status="normal"] {
+  background: var(--color-stone-300);
+  color: var(--color-stone-600);
+}
+
+.deadline-badge[data-status="completed"] {
+  background: var(--color-green-400);
+  color: var(--color-white);
+}
+
+/* 废弃任务 badge */
+.deadline-badge[data-status="abandoned"] {
+  background: var(--color-stone-400);
+  color: var(--color-white);
+  text-decoration: none;
+}
+
+/* 收款状态 badge */
+.daily-time-badge[data-variant="payment-status"] {
+  background: var(--color-blue-50);
+  color: var(--color-blue-700);
+  border: 1px solid var(--color-blue-200);
+}
+.daily-time-badge[data-payment-variant="paid-full"] {
+  background: var(--color-green-50);
+  color: var(--color-green-700);
+  border: 1px solid var(--color-green-200);
+}
+.daily-time-badge[data-payment-variant="paid-partial"] {
+  background: var(--color-amber-50);
+  color: var(--color-amber-700);
+  border: 1px solid var(--color-amber-200);
+}
+.daily-time-badge[data-payment-variant="refunded"] {
+  background: var(--color-red-50);
+  color: var(--color-red-600);
+  border: 1px solid var(--color-red-200);
+}
+.daily-time-badge[data-payment-variant="free"] {
+  background: var(--color-purple-50);
+  color: var(--color-purple-600);
+  border: 1px solid var(--color-purple-200);
+}
+.daily-time-badge[data-payment-variant="pending"] {
+  background: var(--color-stone-100);
+  color: var(--color-stone-500);
+}
+.daily-time-badge[data-payment-variant="abandoned"] {
+  background: var(--color-stone-200);
+  color: var(--color-stone-500);
+}
+
+/* 废弃任务卡片整体样式 */
+.task-card.abandoned {
+  opacity: 0.6;
+  filter: grayscale(0.5);
+}
+
+/* 截止文字状态颜色（通过 data-attribute 映射） */
+.task-dates .deadline-date {
+  font-size: 0.875rem;
+  line-height: 1.2;
+  color: var(--color-stone-600);
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Deadline status color mapping (apply only to in-card deadline elements) */
+.deadline-date[data-deadline-status="overdue"],
+.deadline-date[data-deadline-status="imminent"] {
+  color: var(--color-red-500);
+  font-weight: 600;
+}
+
+.deadline-date[data-deadline-status="today"] {
+  color: var(--color-orange-500);
+  font-weight: 600;
+}
+
+.deadline-date[data-deadline-status="tomorrow"],
+.deadline-date[data-deadline-status="urgent"] {
+  color: var(--color-yellow-400);
+  font-weight: 600;
+}
+
+.deadline-date[data-deadline-status="normal"] {
+  color: var(--color-stone-600);
+}
+
+.deadline-date[data-deadline-status="completed"],
+.deadline-date.deadline-date--completed {
+  color: var(--color-green-600);
+  font-weight: 600;
+}
+
+/* 节点列表（右侧面板） */
+.node-item {
+  border-left: 3px solid #e2e8f0;
+  transition: all 0.3s ease;
+}
+
+.node-item.active {
+  border-left-color: #667eea;
+  background: rgba(102, 126, 234, 0.05);
+}
+
+.node-item.completed {
+  border-left-color: #10b981;
+}
+
+.node-item.completed span {
+  color: #999;
+  text-decoration: line-through;
+}
+
+.nodes-list-scrollable {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
+/* 节点与状态按钮（右侧节点列表区域） */
+/* 节点与状态按钮（右侧节点列表区域）
+   NOTE: 预设节点样式由运行时的 `applyPresetNodeStyles` 注入管理，
+   因此静态硬编码的单独预设样式已移除以避免重复/覆盖。 */
+
+/* ============================================================================
+ * 6. 通用按钮与药丸
+ * ============================================================================ */
+/* 右下角添加任务按钮 */
+.add-button {
+  background: #3b82f6;
+  transition: all 0.3s ease;
+}
+
+.add-button:hover {
+  transform: scale(1.05);
+  box-shadow: 0 8px 25px rgba(59, 130, 246, 0.25);
+}
+
+/* 组件颜色覆盖（由工具类迁移） */
+.edit-btn {
+  color: var(--color-blue-500);
+}
+
+.edit-btn:hover {
+  color: var(--color-blue-700);
+}
+
+.restore-btn {
+  color: var(--color-green-600);
+}
+
+.restore-btn:hover {
+  color: var(--color-green-800);
+}
+
+.delete-btn,
+.delete-type-btn,
+.delete-source-btn {
+  color: var(--color-red-500);
+}
+
+.delete-btn:hover,
+.delete-type-btn:hover,
+.delete-source-btn:hover {
+  color: var(--color-red-700);
+}
+
+.decrement-hours-btn,
+.increment-hours-btn {
+  color: var(--color-stone-600);
+}
+
+.confirm-cancel,
+.timer-cancel {
+  color: var(--color-stone-700);
+}
+
+.close-date-tasks {
+  color: var(--color-stone-400);
+}
+
+.close-date-tasks:hover {
+  color: var(--color-stone-600);
+}
+
+/* 数据驱动的组件颜色映射（已迁移到页面更靠前的位置，便于与日历/月度统计并列） */
+
+/* 推荐项按类型的映射（已在上方的“工作量分析面板”部分统一定义，移除此处重复） */
+
+/* 节点与模态按钮 */
+
+#add-node-btn[data-variant="add-node"] {
+  background: var(--color-stone-200);
+  color: var(--color-stone-700);
+}
+
+#add-node-btn[data-variant="add-node"]:hover {
+  background: var(--color-stone-300);
+}
+
+#cancel-btn[data-variant="cancel"] {
+  color: var(--color-stone-700);
+}
+
+#save-task-btn[data-variant="save"] {
+  background: var(--color-blue-600);
+  color: var(--color-white);
+}
+
+#save-task-btn[data-variant="save"]:hover {
+  background: var(--color-blue-700);
+}
+
+/* 通用保存按钮样式（用于将蓝色按钮样式集中管理） */
+.btn-save {
+  background: var(--color-blue-500);
+  color: var(--color-white);
+  border-radius: 0.5rem;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.btn-save:hover {
+  background: var(--color-blue-600);
+}
+
+.btn-save:active {
+  transform: translateY(1px);
+}
+
+/* ============================================================================
+ * 7. 类型色块
+ * ============================================================================ */
+/* 类型指示点 */
+.type-badge {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.type-dot--teal {
+  background-color: #4ecdc4;
+}
+
+.type-dot--purple {
+  background-color: #9b59b6;
+}
+
+.type-dot--orange {
+  background-color: #e67e22;
+}
+
+.type-dot--gray {
+  background-color: #95a5a6;
+}
+
+.type-dot--red {
+  background-color: #ff6b6b;
+}
+
+.type-dot--green {
+  background-color: #07c160;
+}
+
+.type-dot--blue {
+  background-color: #12b7f5;
+}
+
+.type-dot--yellow {
+  background-color: #ffb800;
+}
+
+/* ============================================================================
+ * 8. 折叠 & 过渡组件
+ * ============================================================================ */
+/* 折叠内容 */
+.collapse-content {
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, opacity 0.3s ease-out;
+}
+
+.collapse-content.collapsed {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* 折叠指示器 */
+.chevron-rotate {
+  transition: transform 0.3s ease;
+}
+
+.chevron-rotate.rotated {
+  transform: rotate(180deg);
+}
+
+/* ============================================================================
+ * 9. 拖拽与排序辅助（root 通用）
+ * ============================================================================ */
+/* 拖拽手柄 */
+.drag-handle {
+  width: 28px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  touch-action: none;
+  -ms-touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-handle .material-icons {
+  font-size: 18px;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 拖拽状态 */
+.type-item.dragging,
+.source-item.dragging {
+  opacity: 0.85;
+}
+
+/* 拖拽占位 */
+.drag-placeholder {
+  border: 2px dashed rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  margin: 6px 0;
+  background: transparent;
+}
+
+/* 拖拽残影 */
+.custom-drag-ghost {
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  opacity: 0.98;
+}
+
+/* 拖拽过渡 */
+.type-item,
+.source-item,
+.preset-node-row {
+  transition: transform 180ms var(--default-transition-timing-function);
+  will-change: transform;
+}
+
+/* Inputs in type-item: ensure focus ring uses theme base ring */
+.type-item input[type="text"],
+.type-item input[type="color"],
+.type-item .type-name-input,
+.type-item .type-color-input {
+  outline: none;
+}
+
+.type-item input[type="text"]:focus,
+.type-item input[type="text"]:focus-visible,
+.type-item input[type="color"]:focus,
+.type-item input[type="color"]:focus-visible,
+.type-item .type-name-input:focus,
+.type-item .type-name-input:focus-visible,
+.type-item .type-color-input:focus,
+.type-item .type-color-input:focus-visible {
+  box-shadow: 0 0 0 calc(var(--tw-ring-offset-width, 0px) + 2px) var(--base-ring);
+}
+
+/* ============================================================================
+ * 10. 预览/遮罩覆盖层
+ * ============================================================================ */
+/* 任务预览遮罩 */
+#task-preview-overlay,
+.task-preview-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+  padding: 20px;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 预览容器 */
+.task-preview-wrapper {
+  max-width: 920px;
+  padding: 12px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  width: 100%;
+  margin: 0 auto;
+  z-index: 10000;
+}
+
+/* 预览卡片规则 */
+#task-preview-overlay .task-card,
+#task-preview-overlay .task-preview-wrapper .task-card {
+  position: static !important;
+  top: auto !important;
+  left: auto !important;
+  opacity: 1 !important;
+  max-width: 435px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  transform: none !important;
+}

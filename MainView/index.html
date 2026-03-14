@@ -1,0 +1,330 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN" version="委托排单助手3.1.2">
+
+<head>
+  <meta charset="UTF-8">
+  <base href="/MainView/">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>委托排单助手3.1.2</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <script>window.injectInfo = { env: "PROD" };</script>
+  <script src="mini-app-log.js" data-logging-script="true"></script>
+  <script defer="" src="tailwind4.1.13.js"></script>
+  <link id="theme-stylesheet" href="暖色.css" rel="stylesheet">
+  <script>
+    window.artifactId = "flashapp-f3b42c12ac0f421e";
+    window.artifactVersion = "65";
+    window.trace_id = "219ff71117660771533985446e6f7c";
+  </script>
+  <link rel="stylesheet" href="base-style.css">
+  <!-- Tailwind 基础样式已拆分到 base-style.css -->
+
+</head>
+
+<body>
+  <div id="container" class="min-h-screen p-4 w-full">
+    <!-- 左侧面板 -->
+    <div class="left-panel">
+      <!-- 头部标题-->
+      <header class="text-center"
+        style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:4rem;text-align:center;">
+        <h1 class="text-3xl font-bold text-stone-800">委托排单助手3.1.2</h1>
+      </header>
+
+      <!-- 日历组件 -->
+      <section class="mb-2">
+        <div class="bg-white rounded-xl shadow-sm border border-stone-100 calendar-card">
+          <div
+            class="flex items-center justify-between p-4  border-stone-100 cursor-pointer hover:bg-stone-50 transition-colors rounded-xl"
+            id="calendar-toggle">
+            <div class="flex items-center">
+              <span class="material-icons mr-2 icon-calendar">calendar_month</span>
+              <h3 class="font-semibold text-stone-800 text-base">日历</h3>
+            </div>
+            <span id="calendar-chevron" class="material-icons text-stone-600 chevron-rotate">expand_less</span>
+          </div>
+
+          <div id="calendar-content" class="collapse-content calendar-card-body">
+            <div class="p-4">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <button id="calendar-prev"
+                    class="calendar-nav-btn p-1 hover:bg-stone-100 rounded-full transition-colors">
+                    <span class="material-icons text-stone-600">chevron_left</span>
+                  </button>
+                  <h3 id="calendar-title" class="font-semibold text-stone-800 text-sm leading-tight">2025年 十二月</h3>
+                  <button id="calendar-next"
+                    class="calendar-nav-btn p-1 hover:bg-stone-100 rounded-full transition-colors">
+                    <span class="material-icons text-stone-600">chevron_right</span>
+                  </button>
+                </div>
+                <button id="calendar-mode-toggle"
+                  class="calendar-mode-toggle px-3 py-1 text-xs font-medium rounded-full border border-stone-200 transition-all">
+                  切换到日程条模式
+                </button>
+              </div>
+
+              <!-- 星期标题 -->
+              <div class="grid grid-cols-7 gap-1 mb-2">
+                <div class="weekday-title">一</div>
+                <div class="weekday-title">二</div>
+                <div class="weekday-title">三</div>
+                <div class="weekday-title">四</div>
+                <div class="weekday-title">五</div>
+                <div class="weekday-title">六</div>
+                <div class="weekday-title">日</div>
+              </div>
+
+              <!-- 动态生成日历的容器 -->
+              <div id="calendar-grid-wrapper" class="relative">
+                <div id="calendar-grid" class="space-y-4"></div>
+                <div id="calendar-timeline-layer" class="calendar-timeline-layer hidden"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 月度统计组件 -->
+      <section class="mb-2">
+        <div class="monthly-stats-card rounded-xl shadow-sm">
+          <div
+            class="flex items-center justify-between p-4 monthly-stats-header cursor-pointer transition-colors rounded-xl"
+            id="monthly-stats-toggle">
+            <div class="flex items-center">
+              <span class="material-icons mr-2 monthly-stats-icon">bar_chart</span>
+              <h3 class="font-semibold section-title">月度统计</h3>
+            </div>
+            <span id="monthly-stats-chevron"
+              class="material-icons monthly-stats-chevron chevron-rotate">expand_less</span>
+          </div>
+
+          <div id="monthly-stats-content" class="collapse-content overflow-x-auto">
+            <!-- 月度统计信息 -->
+            <div class="flex gap-2 mb-2 px-2">
+              <div class="text-center rounded-xl monthly-stat-item px-1 py-2 flex-1 min-w-[4rem]" data-stat="tasks">
+                <div class="text-lg text-top font-bold min-h-[1rem] flex items-center justify-center min-w-0 truncate"
+                  id="monthly-task-count" data-stat-count>0/0</div>
+                <div class="text-xs h-4 flex items-center justify-center" data-stat-label>本月稿件数</div>
+              </div>
+              <div class="text-center rounded-xl monthly-stat-item px-1 py-2 w-max min-w-[4rem]" data-stat="payment">
+                <div class="text-lg text-top font-bold min-h-[2rem] flex items-center justify-center whitespace-nowrap"
+                  id="monthly-payment-count" data-stat-count>¥0/¥0</div>
+                <div class="text-xs h-4 flex items-center justify-center" data-stat-label>本月稿酬</div>
+              </div>
+              <div class="text-center rounded-xl monthly-stat-item px-1 py-2 flex-1 min-w-[4rem]" data-stat="hourly">
+                <div class="text-lg text-top font-bold min-h-[1rem] flex items-center justify-center min-w-0 truncate"
+                  id="monthly-hourly-rate" data-stat-count>¥0/h</div>
+                <div class="text-xs h-4 flex items-center justify-center" data-stat-label>本月时薪</div>
+              </div>
+            </div>
+
+            <div class="platform-stats-wrapper" id="platform-wrapper">
+              <div class="platform-stats-header" id="platform-header">
+                <span class="platform-stats-title">平台收入</span>
+                <span class="platform-stats-meta">已完成/总收入</span>
+              </div>
+              <div id="monthly-platform-stats" class="platform-stats-list"></div>
+              <div id="monthly-platform-empty" class="platform-stat-empty">本月暂无平台收入</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 智能推荐面板 -->
+      <section id="smart-recommendations" class="mb-10">
+        <div class="recommendations-card rounded-xl shadow-sm">
+          <div
+            class="flex items-center justify-between p-3 recommendations-header cursor-pointer transition-colors rounded-xl"
+            id="recommendations-toggle">
+            <div class="flex items-center">
+              <span class="material-icons mr-2 icon-lightbulb">lightbulb</span>
+              <h3 class="font-semibold section-title">工作量分析</h3>
+            </div>
+            <span id="recommendations-chevron"
+              class="material-icons recommendations-chevron chevron-rotate">expand_less</span>
+          </div>
+
+          <div id="recommendations-content" class="collapse-content">
+            <div class="p-3">
+              <div class="grid grid-cols-3 gap-2 mb-2">
+                <div class="text-center p-2 rounded-lg" data-rec="total-remaining-hours">
+                  <div class="text-lg font-bold" id="total-remaining-hours" data-rec-count>0h</div>
+                  <div class="text-xs" data-rec-label>总剩余工时</div>
+                </div>
+                <div class="text-center p-2 rounded-lg" data-rec="daily-recommended-hours">
+                  <div class="text-lg font-bold" id="daily-recommended-hours" data-rec-count>0h</div>
+                  <div class="text-xs" data-rec-label>日均建议工时</div>
+                </div>
+                <div class="text-center p-2 rounded-lg" data-rec="days-remaining">
+                  <div class="text-lg font-bold" id="days-remaining" data-rec-count>0天</div>
+                  <div class="text-xs" data-rec-label>最近截止天数</div>
+                </div>
+              </div>
+
+              <div id="recommendations-list" class="space-y-1">
+              </div>
+            </div>
+          </div>
+      </section>
+    </div>
+
+    <!-- 右侧面板 -->
+    <div class="right-panel">
+      <!-- 统计卡片 -->
+      <section class="relative mb-4">
+        <div class="grid grid-cols-5 gap-2 mt-[3px]" id="stats-container">
+          <div class="stats-card rounded-lg p-2 text-center relative cursor-pointer transition-all ring-2"
+            data-type-filter="all" data-testid="stats-card-all">
+            <div class="text-lg font-bold text-stone-800">0/0</div>
+            <div class="text-xs" data-stat-label>全部</div>
+          </div>
+
+          <div class="stats-card rounded-lg p-2 text-center relative cursor-pointer transition-all hover:bg-stone-50"
+            data-type-filter="illustration" data-testid="stats-card-illustration">
+
+            <div class="text-lg font-bold text-stone-800">0/0</div>
+            <div class="text-xs" data-stat-label>插图稿</div>
+          </div>
+
+          <div class="stats-card rounded-lg p-2 text-center relative cursor-pointer transition-all hover:bg-stone-50"
+            data-type-filter="qq" data-testid="stats-card-qq">
+            <div class="text-lg font-bold text-stone-800">0/0</div>
+            <div class="text-xs" data-stat-label>QQ人</div>
+          </div>
+
+          <div class="stats-card rounded-lg p-2 text-center relative cursor-pointer transition-all hover:bg-stone-50"
+            data-type-filter="fanart" data-testid="stats-card-fanart">
+            <div class="text-lg font-bold text-stone-800">0/0</div>
+            <div class="text-xs" data-stat-label>同人稿</div>
+          </div>
+
+          <div class="stats-card rounded-lg p-2 text-center relative cursor-pointer transition-all hover:bg-stone-50"
+            data-type-filter="other" data-testid="stats-card-other">
+            <div class="text-lg font-bold text-stone-800">0/0</div>
+            <div class="text-xs" data-stat-label>其他</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 管理类型按钮 -->
+      <div class="mb-4 flex items-center justify-center gap-4 types-actions">
+        <button id="manage-types-btn"
+          class="px-3 py-1 text-sm font-medium rounded-full transition-all flex items-center justify-center"
+          data-variant="manage-types" data-testid="manage-types-btn">
+          <span class="material-icons text-sm mr-1">settings</span>
+          管理类别、平台、常用节点
+        </button>
+
+        <button id="page-settings-btn"
+          class="px-3 py-1 text-sm font-medium rounded-full transition-all flex items-center justify-center"
+          data-variant="page-settings" data-testid="page-settings-btn">
+          <span class="material-icons text-sm mr-1">tune</span>
+          页面设置
+        </button>
+        <button id="toggle-hide-completed-btn"
+          class="px-3 py-1 text-sm font-medium rounded-full transition-all flex items-center justify-center"
+          data-variant="toggle-hide-completed" data-testid="toggle-hide-completed-btn">
+          <span class="material-icons text-sm mr-1">visibility_off</span>
+          隐藏已完成委托
+        </button>
+        <!-- duplicate toggle button removed -->
+
+
+        <button id="toggle-recycle-main-btn"
+          class="px-3 py-1 text-sm font-medium rounded-full transition-all flex items-center justify-center"
+          data-variant="toggle-recycle" data-testid="toggle-recycle-main-btn">
+          <span class="material-icons text-sm mr-1">delete_outline</span>
+          显示回收站
+        </button>
+
+        <!-- 搜索按钮与面板（插入） -->
+        <div class="types-search-wrap" aria-hidden="true">
+          <button id="types-search-btn" class="types-search-btn" aria-expanded="false" aria-label="搜索任务">
+            <span class="material-icons text-sm">search</span>
+          </button>
+          <div class="types-search-panel" role="search" aria-hidden="true">
+            <input id="types-search-input" type="search" placeholder="搜索任务名称..." aria-label="搜索任务标题">
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 任务列表 -->
+      <main class="mb-20">
+        <div class="task-list-wrapper">
+          <div id="task-list" class="space-y-4"></div>
+        </div>
+
+        <!-- 空状态提示 -->
+        <div id="empty-state" class="text-center py-12">
+          <span class="material-icons text-6xl text-stone-300 mb-4">assignment</span>
+          <p class="text-stone-500 text-lg">暂无任务</p>
+          <p class="text-stone-400 text-sm mt-2">点击下方按钮添加您的第一个任务</p>
+        </div>
+      </main>
+    </div>
+
+    <!-- 添加任务按钮 -->
+    <button id="add-task-btn"
+      class="add-button fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center"
+      data-testid="add-task-btn">
+      <span class="material-icons text-2xl">add</span>
+    </button>
+
+    <!-- 日期任务详情模态框 -->
+    <div id="date-tasks-modal" class="modal-backdrop fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl w-full max-w-md shadow-2xl modal-content">
+        <div class="p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold text-stone-800">
+              <span id="date-tasks-title"></span>
+            </h2>
+            <button id="close-date-tasks" class="close-date-tasks transition-colors">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+
+          <div id="date-tasks-list" class="space-y-3 max-h-96 overflow-y-auto">
+            <!-- 任务列表将通过JavaScript动态生成 -->
+          </div>
+
+          <div id="date-tasks-empty" class="text-center py-8 text-stone-400 hidden">
+            <span class="material-icons text-4xl mb-2">event_available</span>
+            <p>该日期暂无任务</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 图片预览模态框 -->
+    <div id="image-modal" class="modal-backdrop fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl w-full max-w-2xl shadow-2xl modal-content">
+        <div class="p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 id="image-modal-title" class="text-xl font-bold text-stone-800"></h2>
+            <button id="close-image-modal" class="text-stone-400 hover:text-stone-600 transition-colors">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+
+          <div class="text-center modal-body">
+            <img id="modal-image" class="object-contain rounded-lg" alt="任务图片">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/scripts/task-utils.js"></script>
+  <script src="/scripts/task-modal-shared.js"></script>
+  <script>TaskModalController.injectHTML();</script>
+  <script src="app.js"></script>
+
+  <script data-logging-script="true">console.log("[MiniApp] body结束前");</script>
+  </script>
+
+  <link rel="stylesheet" href="base-style.css">
+  <!-- Tailwind 基础样式已拆分到基础样式.css -->
+
+  </head>
