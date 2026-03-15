@@ -100,82 +100,10 @@
     return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   };
 
-  // ---- color helpers (aligned with main app calendar timeline) ----
-  const parseRgbString = (rgbStr) => {
-    if (!rgbStr) return null;
-    const m = rgbStr.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (!m) return null;
-    return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
-  };
-
-  const hexToRgb = (hex) => {
-    let v = (hex || "#6B7280").replace("#", "");
-    if (v.length === 3) {
-      v = v
-        .split("")
-        .map((c) => c + c)
-        .join("");
-    }
-    return {
-      r: parseInt(v.slice(0, 2), 16),
-      g: parseInt(v.slice(2, 4), 16),
-      b: parseInt(v.slice(4, 6), 16),
-    };
-  };
-
-  const rgbToHsv = (r255, g255, b255) => {
-    const rn = r255 / 255;
-    const gn = g255 / 255;
-    const bn = b255 / 255;
-    const max = Math.max(rn, gn, bn);
-    const min = Math.min(rn, gn, bn);
-    const d = max - min;
-    let h = 0;
-    let s = 0;
-    let v = max;
-    if (d !== 0) {
-      s = d / max;
-      if (max === rn) h = ((gn - bn) / d) % 6;
-      else if (max === gn) h = (bn - rn) / d + 2;
-      else h = (rn - gn) / d + 4;
-      h = (h * 60 + 360) % 360;
-    }
-    return { h, s, v };
-  };
-
-  const hsvToRgb = (h, s, v) => {
-    const c = v * s;
-    const hh = h / 60;
-    const x = c * (1 - Math.abs((hh % 2) - 1));
-    let r1 = 0;
-    let g1 = 0;
-    let b1 = 0;
-    if (hh >= 0 && hh < 1) {
-      r1 = c;
-      g1 = x;
-    } else if (hh < 2) {
-      r1 = x;
-      g1 = c;
-    } else if (hh < 3) {
-      g1 = c;
-      b1 = x;
-    } else if (hh < 4) {
-      g1 = x;
-      b1 = c;
-    } else if (hh < 5) {
-      r1 = x;
-      b1 = c;
-    } else {
-      r1 = c;
-      b1 = x;
-    }
-    const m = v - c;
-    return {
-      r: Math.round((r1 + m) * 255),
-      g: Math.round((g1 + m) * 255),
-      b: Math.round((b1 + m) * 255),
-    };
-  };
+  // ---- color helpers（委托到 taskUtils 共享实现） ----
+  const { hexToRgb, parseRgbString, rgbToHsv, hsvToRgb, blendWithWhite, hexToHsl, getNearestTailwindTextHex,
+    supportsOKLCH, srgbToLinear, linearToSrgb, rgbToXyz, xyzToOklab, oklabToOklch, oklchToOklab,
+    oklabToXyz, xyzToRgb, hexToOklch, oklchToRgb, computeOklchAdjustedRing } = window.taskUtils;
 
   const computeLightBgFromHex = (hex, capS, capV) => {
     const rgb = hexToRgb(hex);
@@ -186,145 +114,6 @@
     const cappedV = Math.min(1, Math.max(0, capV ?? defaultV));
     const out = hsvToRgb(hsv.h, cappedS, cappedV);
     return `rgb(${out.r}, ${out.g}, ${out.b})`;
-  };
-
-  const blendWithWhite = (color, percent = 0.7) => {
-    try {
-      let rgb = null;
-      if (typeof color === "string" && color.startsWith("rgb")) {
-        rgb = parseRgbString(color);
-      } else {
-        rgb = hexToRgb(color);
-      }
-      if (!rgb) return color;
-      const p = Math.min(1, Math.max(0, Number(percent) || 0));
-      const r = Math.round(rgb.r + (255 - rgb.r) * p);
-      const g = Math.round(rgb.g + (255 - rgb.g) * p);
-      const b = Math.round(rgb.b + (255 - rgb.b) * p);
-      return `rgb(${r}, ${g}, ${b})`;
-    } catch (e) {
-      return color;
-    }
-  };
-
-  const supportsOKLCH = () => {
-    try {
-      return (
-        typeof CSS !== "undefined" &&
-        CSS.supports &&
-        CSS.supports("color", "oklch(0.5 0.1 50)")
-      );
-    } catch (e) {
-      return false;
-    }
-  };
-
-  const srgbToLinear = (v) => {
-    v = v / 255;
-    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-
-  const linearToSrgb = (v) => {
-    const srgb =
-      v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-    return Math.round(Math.min(1, Math.max(0, srgb)) * 255);
-  };
-
-  const rgbToXyz = (r, g, b) => {
-    const R = srgbToLinear(r);
-    const G = srgbToLinear(g);
-    const B = srgbToLinear(b);
-    const X = 0.4124564 * R + 0.3575761 * G + 0.1804375 * B;
-    const Y = 0.2126729 * R + 0.7151522 * G + 0.072175 * B;
-    const Z = 0.0193339 * R + 0.119192 * G + 0.9503041 * B;
-    return { X, Y, Z };
-  };
-
-  const xyzToOklab = (X, Y, Z) => {
-    const Xnrm = X / 0.95047;
-    const Ynrm = Y / 1.0;
-    const Znrm = Z / 1.08883;
-
-    const l = 0.8189330101 * Xnrm + 0.3618667424 * Ynrm - 0.1288597137 * Znrm;
-    const m = 0.0329845436 * Xnrm + 0.9293118715 * Ynrm + 0.0361456387 * Znrm;
-    const s = 0.0482003018 * Xnrm + 0.2643662691 * Ynrm + 0.633851707 * Znrm;
-
-    const l_ = Math.cbrt(l);
-    const m_ = Math.cbrt(m);
-    const s_ = Math.cbrt(s);
-
-    const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
-    const a = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
-    const b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
-    return { L, a, b };
-  };
-
-  const oklabToOklch = ({ L, a, b }) => {
-    const C = Math.sqrt(a * a + b * b);
-    let h = Math.atan2(b, a) * (180 / Math.PI);
-    if (h < 0) h += 360;
-    return { L, C, h };
-  };
-
-  const oklchToOklab = ({ L, C, h }) => {
-    const hr = (h * Math.PI) / 180;
-    return { L, a: C * Math.cos(hr), b: C * Math.sin(hr) };
-  };
-
-  const oklabToXyz = ({ L, a, b }) => {
-    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
-    const l = l_ * l_ * l_;
-    const m = m_ * m_ * m_;
-    const s = s_ * s_ * s_;
-    const X = 1.2270138511 * l - 0.5577999807 * m + 0.281256149 * s;
-    const Y = -0.0405801784 * l + 1.1122568696 * m - 0.0716766787 * s;
-    const Z = -0.0763812845 * l - 0.4214819784 * m + 1.5861632204 * s;
-    return { X, Y, Z };
-  };
-
-  const xyzToRgb = (X, Y, Z) => {
-    const Rl = 3.2409699419 * X - 1.5373831776 * Y - 0.4986107603 * Z;
-    const Gl = -0.9692436363 * X + 1.8759675015 * Y + 0.0415550574 * Z;
-    const Bl = 0.0556300797 * X - 0.2039769589 * Y + 1.0569715142 * Z;
-    return {
-      r: linearToSrgb(Rl),
-      g: linearToSrgb(Gl),
-      b: linearToSrgb(Bl),
-    };
-  };
-
-  const hexToOklch = (hex) => {
-    const rgb = hexToRgb(hex);
-    if (!rgb) return null;
-    const xyz = rgbToXyz(rgb.r, rgb.g, rgb.b);
-    const oklab = xyzToOklab(xyz.X, xyz.Y, xyz.Z);
-    return oklabToOklch(oklab);
-  };
-
-  const oklchToRgb = ({ L, C, h }) => {
-    const oklab = oklchToOklab({ L, C, h });
-    const xyz = oklabToXyz(oklab);
-    return xyzToRgb(xyz.X, xyz.Y, xyz.Z);
-  };
-
-  const computeOklchAdjustedRing = (hex) => {
-    try {
-      const o = hexToOklch(hex);
-      if (!o) return null;
-      let L = Math.max(0.73, Math.min(1, o.L - 0.05));
-      let C = Math.min(0.37, o.C + 0.1);
-      let h = o.h;
-      const oklchStr = `oklch(${L.toFixed(4)} ${C.toFixed(4)} ${Math.round(
-        h
-      )}deg)`;
-      const rgb = oklchToRgb({ L, C, h });
-      const rgbStr = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-      return { oklch: oklchStr, rgb: rgbStr };
-    } catch (e) {
-      return null;
-    }
   };
 
   const addDays = (date, days) => {
@@ -1174,7 +963,10 @@
       } else if (task.completed) {
         labelHtml = `<span class="bar-label-wrapper"><span class="bar-check material-icons-outlined">check</span><span class="bar-label">${task.name || "未命名"}</span></span>`;
       } else {
-        labelHtml = `<span class="bar-label-wrapper"><span class="bar-label">${task.name || "未命名"}</span></span>`;
+        // lite 主题：根据任务类型颜色推断近似 Tailwind 文字颜色，替代固定橙色
+        const liteNodeColor = state.options.theme === "lite" ? getNearestTailwindTextHex(baseColor) : null;
+        const labelStyle = liteNodeColor ? ` style="color:${liteNodeColor}"` : "";
+        labelHtml = `<span class="bar-label-wrapper"><span class="bar-label"${labelStyle}>${task.name || "未命名"}</span></span>`;
       }
       const innerContent = `
         <span class="bar-dot start" style="background:${effectiveRing};"></span>

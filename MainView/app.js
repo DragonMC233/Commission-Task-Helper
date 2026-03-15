@@ -747,83 +747,9 @@ class TaskManager {
   }
 
   //16进制转hsl
-  hexToHsl(hex) {
-    let c = (hex || "").replace("#", "").trim();
-    if (c.length === 3)
-      c = c
-        .split("")
-        .map((ch) => ch + ch)
-        .join("");
-    if (c.length !== 6) return { h: 0, s: 0, l: 0.5 };
-    const r = parseInt(c.slice(0, 2), 16) / 255;
-    const g = parseInt(c.slice(2, 4), 16) / 255;
-    const b = parseInt(c.slice(4, 6), 16) / 255;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    let h = 0;
-    const l = (max + min) / 2;
-    const d = max - min;
-    const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
-    if (d !== 0) {
-      switch (max) {
-        case r:
-          h = ((g - b) / d) % 6;
-          break;
-        case g:
-          h = (b - r) / d + 2;
-          break;
-        default:
-          h = (r - g) / d + 4;
-      }
-      h *= 60;
-    }
-    if (h < 0) h += 360;
-    return { h, s, l };
-  }
-  //自动配置字体颜色
-  getNearestTailwindTextClass(hexColor) {
-    const palette = [
-      { name: "red", hex: "#ef4444" },
-      { name: "orange", hex: "#f97316" },
-      { name: "amber", hex: "#f59e0b" },
-      { name: "yellow", hex: "#eab308" },
-      { name: "lime", hex: "#84cc16" },
-      { name: "green", hex: "#22c55e" },
-      { name: "emerald", hex: "#10b981" },
-      { name: "teal", hex: "#14b8a6" },
-      { name: "cyan", hex: "#06b6d4" },
-      { name: "sky", hex: "#0ea5e9" },
-      { name: "blue", hex: "#3b82f6" },
-      { name: "indigo", hex: "#6366f1" },
-      { name: "violet", hex: "#8b5cf6" },
-      { name: "purple", hex: "#a855f7" },
-      { name: "fuchsia", hex: "#d946ef" },
-      { name: "pink", hex: "#ec4899" },
-      { name: "rose", hex: "#f43f5e" },
-      { name: "slate", hex: "#475569" },
-    ];
-    const { h, s, l } = this.hexToHsl(hexColor || "#e5e7eb");
-    if (
-      (l === 1.0 && s < 0.03) || // 亮度100且饱和度低于3%
-      (l < 1.0 && l > 0.94 && !(s >= 0.94)) || // 亮度在95%到100%之间（不含100），且饱和度低于95%
-      (l < 0.9 && s < 0.15) || // 亮度在90%以下 ,且饱和度低于15%
-      (l >= 0.9 && l <= 0.95 && s < 0.15) || // 亮度在90%到95%之间（含90%和95%），且饱和度低于15%
-      l < 0.15 // 亮度太低也用灰色
-    ) {
-      return "text-stone-700";
-    }
-    let best = "gray";
-    let bestDelta = Number.POSITIVE_INFINITY;
-    palette.forEach((c) => {
-      const { h: ph } = this.hexToHsl(c.hex);
-      const delta = Math.min(Math.abs(ph - h), 360 - Math.abs(ph - h));
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        best = c.name;
-      }
-    });
-    return `text-${best}-700`;
-  }
+  hexToHsl(hex) { return window.taskUtils.hexToHsl(hex); }
+  //自动配置字体颜色（委托到 taskUtils 共享实现）
+  getNearestTailwindTextClass(hexColor) { return window.taskUtils.getNearestTailwindTextClass(hexColor); }
   // 预设委托节点定义转译
   normalizePresetNode(node) {
     if (!node) return null;
@@ -6520,253 +6446,29 @@ class TaskManager {
   }
 
   // 将输入颜色（hex 或 rgb(...)）与白色按百分比混合，percent 范围 0..1
-  blendWithWhite(color, percent = 0.7) {
-    try {
-      let rgb = null;
-      if (typeof color === "string" && color.startsWith("rgb")) {
-        rgb = this.parseRgbString(color);
-      } else {
-        rgb = this._hexToRgb(color);
-      }
-      if (!rgb) return color;
-      const p = Math.min(1, Math.max(0, Number(percent) || 0));
-      const r = Math.round(rgb.r + (255 - rgb.r) * p);
-      const g = Math.round(rgb.g + (255 - rgb.g) * p);
-      const b = Math.round(rgb.b + (255 - rgb.b) * p);
-      return `rgb(${r}, ${g}, ${b})`;
-    } catch (e) {
-      return color;
-    }
-  }
+  blendWithWhite(color, percent = 0.7) { return window.taskUtils.blendWithWhite(color, percent); }
 
-  // ------- OKLCH 帮助函数（sRGB ↔ OKLab/OKLCH） -------
-  // 检测浏览器是否支持 oklch() CSS 函数
-  supportsOKLCH() {
-    try {
-      return (
-        typeof CSS !== "undefined" &&
-        CSS.supports &&
-        CSS.supports("color", "oklch(0.5 0.1 50)")
-      );
-    } catch (e) {
-      return false;
-    }
-  }
+  // ------- OKLCH 帮助函数 + 颜色辅助（全部委托到 taskUtils）-------
+  supportsOKLCH() { return window.taskUtils.supportsOKLCH(); }
+  _srgbToLinear(v) { return window.taskUtils.srgbToLinear(v); }
+  _linearToSrgb(v) { return window.taskUtils.linearToSrgb(v); }
+  _rgbToXyz(r, g, b) { return window.taskUtils.rgbToXyz(r, g, b); }
+  _xyzToOklab(X, Y, Z) { return window.taskUtils.xyzToOklab(X, Y, Z); }
+  _oklabToOklch(oklab) { return window.taskUtils.oklabToOklch(oklab); }
+  _oklchToOklab(oklch) { return window.taskUtils.oklchToOklab(oklch); }
+  _oklabToXyz(oklab) { return window.taskUtils.oklabToXyz(oklab); }
+  _xyzToRgb(X, Y, Z) { return window.taskUtils.xyzToRgb(X, Y, Z); }
+  _hexToOklch(hex) { return window.taskUtils.hexToOklch(hex); }
+  _oklchToRgb(oklch) { return window.taskUtils.oklchToRgb(oklch); }
+  computeOklchAdjustedRing(hex) { return window.taskUtils.computeOklchAdjustedRing(hex); }
+  computeRingFromHex(hex, deltaS = 0.5, deltaV = 0) { return window.taskUtils.computeRingFromHex(hex, deltaS, deltaV); }
+  luminanceFromRgb(rgb) { return window.taskUtils.luminanceFromRgb(rgb); }
 
-  // 将 RGB (0-255) 转换为线性 sRGB (0..1)
-  _srgbToLinear(v) {
-    v = v / 255;
-    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  }
-
-  // 将线性 sRGB 转换回 sRGB (0-255)
-  _linearToSrgb(v) {
-    const srgb =
-      v <= 0.0031308 ? 12.92 * v : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
-    return Math.round(Math.min(1, Math.max(0, srgb)) * 255);
-  }
-
-  _rgbToXyz(r, g, b) {
-    const R = this._srgbToLinear(r);
-    const G = this._srgbToLinear(g);
-    const B = this._srgbToLinear(b);
-    // 标准 sRGB → XYZ (D65)
-    const X = 0.4124564 * R + 0.3575761 * G + 0.1804375 * B;
-    const Y = 0.2126729 * R + 0.7151522 * G + 0.072175 * B;
-    const Z = 0.0193339 * R + 0.119192 * G + 0.9503041 * B;
-    return { X, Y, Z };
-  }
-
-  _xyzToOklab(X, Y, Z) {
-    // D65 白点归一化
-    const Xnrm = X / 0.95047;
-    const Ynrm = Y / 1.0;
-    const Znrm = Z / 1.08883;
-
-    const l = 0.8189330101 * Xnrm + 0.3618667424 * Ynrm - 0.1288597137 * Znrm;
-    const m = 0.0329845436 * Xnrm + 0.9293118715 * Ynrm + 0.0361456387 * Znrm;
-    const s = 0.0482003018 * Xnrm + 0.2643662691 * Ynrm + 0.633851707 * Znrm;
-
-    const l_ = Math.cbrt(l);
-    const m_ = Math.cbrt(m);
-    const s_ = Math.cbrt(s);
-
-    const L = 0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_;
-    const a = 1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_;
-    const b = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_;
-    return { L, a, b };
-  }
-
-  _oklabToOklch({ L, a, b }) {
-    const C = Math.sqrt(a * a + b * b);
-    let h = Math.atan2(b, a) * (180 / Math.PI);
-    if (h < 0) h += 360;
-    return { L, C, h };
-  }
-
-  _oklchToOklab({ L, C, h }) {
-    const hr = (h * Math.PI) / 180;
-    return { L, a: C * Math.cos(hr), b: C * Math.sin(hr) };
-  }
-
-  _oklabToXyz({ L, a, b }) {
-    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
-    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
-    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
-    const l = l_ * l_ * l_;
-    const m = m_ * m_ * m_;
-    const s = s_ * s_ * s_;
-    const X = 1.2270138511 * l - 0.5577999807 * m + 0.281256149 * s;
-    const Y = -0.0405801784 * l + 1.1122568696 * m - 0.0716766787 * s;
-    const Z = -0.0763812845 * l - 0.4214819784 * m + 1.5861632204 * s;
-    return { X, Y, Z };
-  }
-
-  _xyzToRgb(X, Y, Z) {
-    // 线性 RGB
-    const Rl = 3.2409699419 * X - 1.5373831776 * Y - 0.4986107603 * Z;
-    const Gl = -0.9692436363 * X + 1.8759675015 * Y + 0.0415550574 * Z;
-    const Bl = 0.0556300797 * X - 0.2039769589 * Y + 1.0569715142 * Z;
-    return {
-      r: this._linearToSrgb(Rl),
-      g: this._linearToSrgb(Gl),
-      b: this._linearToSrgb(Bl),
-    };
-  }
-
-  // 将 hex 转为 OKLCH {L,C,h}
-  _hexToOklch(hex) {
-    const rgb = this._hexToRgb(hex);
-    if (!rgb) return null;
-    const xyz = this._rgbToXyz(rgb.r, rgb.g, rgb.b);
-    const oklab = this._xyzToOklab(xyz.X, xyz.Y, xyz.Z);
-    return this._oklabToOklch(oklab);
-  }
-
-  // 将 OKLCH 转为 RGB {r,g,b}
-  _oklchToRgb({ L, C, h }) {
-    const oklab = this._oklchToOklab({ L, C, h });
-    const xyz = this._oklabToXyz(oklab);
-    return this._xyzToRgb(xyz.X, xyz.Y, xyz.Z);
-  }
-
-  // 根据指定规则使用 OKLCH 计算 ring 颜色
-  computeOklchAdjustedRing(hex) {
-    try {
-      const o = this._hexToOklch(hex);
-      if (!o) return null;
-      let L = Math.max(0.73, Math.min(1, o.L - 0.05));
-      let C = Math.min(0.37, o.C + 0.1);
-      let h = o.h;
-      // 若浏览器支持 oklch()，优先返回 oklch 字符串；否则返回 rgb 回退值
-      const oklchStr = `oklch(${L.toFixed(4)} ${C.toFixed(4)} ${Math.round(
-        h
-      )}deg)`;
-      const rgb = this._oklchToRgb({ L, C, h });
-      const rgbStr = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
-      return { oklch: oklchStr, rgb: rgbStr };
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // 依据输入 hex 颜色，计算 HSV 后将 S（饱和度）增加指定增量（默认为 +0.5），返回 rgb(...) 字符串用于 ring/边框
-  // 设计为优先提升饱和度以在浅色背景上生成更鲜明的 ring
-  computeRingFromHex(hex, deltaS = 0.5, deltaV = 0) {
-    // hex -> rgb -> hsv（转换流程）
-    const rgb = this._hexToRgb(hex);
-    const hsv = this._rgbToHsv(rgb.r, rgb.g, rgb.b);
-    // 增加饱和度/亮度增量
-    const newS = Math.min(1, Math.max(0, hsv.s + deltaS));
-    const newV = Math.min(1, Math.max(0, hsv.v + deltaV));
-    const out = this._hsvToRgb(hsv.h, newS, newV);
-    return `rgb(${out.r}, ${out.g}, ${out.b})`;
-  }
-
-  // --- 通用颜色辅助函数 ---
-  _hexToRgb(hex) {
-    let v = (hex || "#95A5A6").replace("#", "");
-    if (v.length === 3)
-      v = v
-        .split("")
-        .map((c) => c + c)
-        .join("");
-    return {
-      r: parseInt(v.slice(0, 2), 16),
-      g: parseInt(v.slice(2, 4), 16),
-      b: parseInt(v.slice(4, 6), 16),
-    };
-  }
-
-  _rgbToHsv(r255, g255, b255) {
-    const rn = r255 / 255,
-      gn = g255 / 255,
-      bn = b255 / 255;
-    const max = Math.max(rn, gn, bn),
-      min = Math.min(rn, gn, bn),
-      d = max - min;
-    let h = 0,
-      s = 0,
-      v = max;
-    if (d !== 0) {
-      s = d / max;
-      if (max === rn) h = ((gn - bn) / d) % 6;
-      else if (max === gn) h = (bn - rn) / d + 2;
-      else h = (rn - gn) / d + 4;
-      h = (h * 60 + 360) % 360;
-    }
-    return { h, s, v };
-  }
-
-  _hsvToRgb(h, s, v) {
-    const c = v * s;
-    const hh = h / 60;
-    const x = c * (1 - Math.abs((hh % 2) - 1));
-    let r1 = 0,
-      g1 = 0,
-      b1 = 0;
-    if (hh >= 0 && hh < 1) {
-      r1 = c;
-      g1 = x;
-    } else if (hh < 2) {
-      r1 = x;
-      g1 = c;
-    } else if (hh < 3) {
-      g1 = c;
-      b1 = x;
-    } else if (hh < 4) {
-      g1 = x;
-      b1 = c;
-    } else if (hh < 5) {
-      r1 = x;
-      b1 = c;
-    } else {
-      r1 = c;
-      b1 = x;
-    }
-    const m = v - c;
-    return {
-      r: Math.round((r1 + m) * 255),
-      g: Math.round((g1 + m) * 255),
-      b: Math.round((b1 + m) * 255),
-    };
-  }
-
-  // 解析 'rgb(r, g, b)' 或 'rgba(r, g, b, a)' 字符串为 {r,g,b}
-  parseRgbString(rgbStr) {
-    if (!rgbStr) return null;
-    const m = rgbStr.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (!m) return null;
-    return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
-  }
-
-  // 计算线性化相对亮度（WCAG）
-  luminanceFromRgb({ r, g, b }) {
-    const srgb = [r / 255, g / 255, b / 255].map((c) => {
-      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-    });
-    return 0.2126 * srgb[0] + 0.7152 * srgb[1] + 0.0722 * srgb[2];
-  }
+  // --- 通用颜色辅助函数（委托到 taskUtils 共享实现）---
+  _hexToRgb(hex) { return window.taskUtils.hexToRgb(hex); }
+  _rgbToHsv(r255, g255, b255) { return window.taskUtils.rgbToHsv(r255, g255, b255); }
+  _hsvToRgb(h, s, v) { return window.taskUtils.hsvToRgb(h, s, v); }
+  parseRgbString(rgbStr) { return window.taskUtils.parseRgbString(rgbStr); }
 
   // 计算对比安全的 ring 色的函数
   // 先尝试 deltaV=+0.5，如果与背景亮度差异太小则尝试更暗的方案

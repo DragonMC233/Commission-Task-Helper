@@ -56,6 +56,20 @@
   background: #c2410c;
 }
 
+/* --- 添加任务 FAB：覆盖主视图 标准.css 蓝色，改用 lite 暖橙主色（匹配 redesign .fab-add） --- */
+.add-button,
+#add-task-btn {
+  background: var(--bar-accent);
+  background-color: var(--bar-accent);
+  transition: transform 0.2s, background-color 0.2s;
+}
+.add-button:hover,
+#add-task-btn:hover {
+  transform: scale(1.05);
+  /* hover 暖橙色阴影，覆盖 标准.css 蓝色阴影 */
+  box-shadow: 0 10px 20px color-mix(in oklab, var(--bar-accent) 30%, transparent);
+}
+
 /* --- 分组控件 --- */
 .control-group {
   background: var(--bar-panel);
@@ -80,11 +94,12 @@
 }
 
 /*  甘特条颜色分层：
-     普通/链式/活跃  → orange-700 (#c2410c)
+     普通/链式/活跃  → 由 bar.js 根据任务第一个节点背景色动态推断，
+                       无节点时兜底用 orange-700 (#c2410c)
      已完成          → stone-400  (#a8a29e, 灰色, 带整体半透明 opacity)
      废弃            → 由 bar.js 内联 gray 处理 */
 .gantt-bar {
-  color: #c2410c;        /* redesign warm: --color-primary-hover */
+  color: #c2410c;        /* 兜底色（无节点时）: orange-700 */
 }
 
 .gantt-bar.completed {
