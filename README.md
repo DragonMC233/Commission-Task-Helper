@@ -23,7 +23,7 @@ task-helper/
 ├── MainView/               # 任务卡片模式页面
 ├── BarView/                # 甘特图模式页面
 ├── scripts/                # 两个网页共用的 JS 模块
-├── font/                   # 用于离线运行的本地字体文件（Material Icons/Symbols）
+├── font/                   # 用于离线运行的本地字体文件（来自Google Material Icons/Symbols）
 ├── pic/                    # 存放任务图片
 ├── RecyclePic/             # 存放位于回收站的任务的图片
 ├── index.json              # 存储任务数据、自定义类型、平台、节点
