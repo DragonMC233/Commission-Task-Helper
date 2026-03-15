@@ -70,7 +70,7 @@ python StartServer.py
 
 ## 🎨 自定义
 
-- **网页图标**：替换根目录下的 `favicon.ico`
+- **网页图标**：将你想要的图标转换为ico文件，并重命名为 `favicon.ico`，放入根目录即可
 - **主题样式**：编辑 `MainView/标准&暖色.css` 和 `BarView/bar-standartd&warm.css`
 - **默认预设**：编辑 `basetype.json` 修改默认任务类型、平台、节点
 
