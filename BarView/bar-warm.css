@@ -1,13 +1,28 @@
 @import url('./bar-standard.css');
 
 :root {
-  --bar-bg: #fff7f0;
-  --bar-panel: #fffaf6;
-  --bar-border: #f4d7c5;
-  --bar-text: #4a2b17;
-  --bar-muted: #9a6b52;
-  --bar-accent: #ff8127;
-  --bar-accent-soft: rgba(255, 129, 39, 0.15);
-  --bar-danger: #ef4444;
-  --bar-shadow: 0 8px 24px rgba(120, 64, 32, 0.12);
+  /* 甘特图主背景调深一个色号以增强暖色主题的视觉强度 */
+  --bar-bg: var(--color-orange-100);
+  --bar-panel: var(--color-orange-50);
+  --bar-border: var(--color-orange-200);
+  --bar-text: var(--color-orange-900);
+  --bar-muted: var(--color-orange-600);
+  --bar-accent: var(--color-orange-500);
+  --bar-accent-soft: color-mix(in oklab, var(--color-orange-500) 15%, var(--color-white));
+  --bar-danger: var(--color-red-500);
+  --bar-chain: var(--color-orange-500);
+  --bar-shadow: 0 0.5rem 1.5rem color-mix(in oklab, var(--color-orange-900) 0%, transparent);
 }
+/* Ensure warm theme also displays a solid active state for toolbar buttons */
+.icon-btn.active,
+.icon-btn:active {
+  background: var(--bar-accent);
+  color: white;
+  box-shadow: 0 0 0 0.125rem color-mix(in oklab, var(--bar-accent) 30%, transparent);
+}
+/* Warm theme tweaks for header controls */
+.control-group { background: color-mix(in oklab, var(--bar-panel) 100%, transparent); }
+.icon-btn:hover { background: color-mix(in oklab, var(--bar-accent) 10%, var(--bar-panel)); color: var(--bar-text); }
+.icon-btn.primary { background: var(--bar-accent); color: white; }
+/* 已完成任务：简约灯相同的 stone-400 灰色 */
+.gantt-bar.completed { color: #a8a29e; }

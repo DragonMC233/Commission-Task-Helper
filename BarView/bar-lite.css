@@ -1,0 +1,109 @@
+@import url('./bar-standard.css');
+
+/* ============================================================
+   Bar Lite Theme
+   基于 bar-redesign.css 暖色方案，精准映射至 bar-standard-tw
+   变量体系，呈现更精致的石色（Stone）+ 橙色主调风格。
+   ============================================================ */
+:root {
+  /* 背景与面板 — Stone 暖白 */
+  --bar-bg: #fcf9f4;                   /* redesign warm: --color-bg-main   */
+  --bar-panel: #ffffff;
+  --bar-border: #e7e0d6;              /* redesign warm: --color-border     */
+
+  /* 文字 */
+  --bar-text: #57534e;                /* redesign warm: --color-text-main stone-600 */
+  --bar-muted: #a8a29e;              /* redesign warm: --color-text-muted  */
+
+  /* 橙色主色 */
+  --bar-accent: #ea580c;             /* redesign warm: --color-primary orange-600 */
+  --bar-accent-soft: #fff7ed;        /* redesign warm: --color-primary-light orange-50 */
+
+  /* 危险 & 链条 */
+  --bar-danger: #e11d48;             /* redesign warm: --color-danger rose-600 */
+  --bar-chain: #d97706;              /* amber-600：暖色系链条色            */
+
+  /* 工具栏阴影：带暖色调 */
+  --bar-shadow: 0 1px 3px 0 color-mix(in oklab, #ea580c 8%, rgb(0 0 0 / 0.05)),
+                0 1px 2px -1px rgb(0 0 0 / 0.04);
+}
+
+/* --- 工具栏：精简阴影，无额外描边 --- */
+.barview-toolbar {
+  box-shadow: var(--bar-shadow);
+}
+
+/* --- 图标按钮：hover 呈 #f5efe6（redesign warm --color-bg-hover）--- */
+.icon-btn:hover {
+  background: #f5efe6;
+  color: var(--bar-text);
+}
+
+.icon-btn.active,
+.icon-btn:active {
+  background: var(--bar-accent);
+  color: white;
+  box-shadow: 0 0 0 0.125rem color-mix(in oklab, var(--bar-accent) 30%, transparent);
+}
+
+.icon-btn.primary {
+  background: var(--bar-accent);
+  color: white;
+}
+
+/* primary 按钮 hover：使用 redesign warm 的 --color-primary-hover */
+.icon-btn.primary:hover {
+  background: #c2410c;
+}
+
+/* --- 分组控件 --- */
+.control-group {
+  background: var(--bar-panel);
+}
+
+/* --- 甘特图滚动区：暖米白底色，与 redesign 背景一致 --- */
+.gantt-scroll {
+  background: var(--bar-bg);
+}
+
+/* --- 网格线：redesign warm 使用石色而非冷蓝灰 --- */
+.grid-line {
+  background: #e7e0d6;   /* redesign warm: --gantt-line-color */
+}
+.grid-line.faint {
+  background: #f5f0eb;   /* redesign warm: --gantt-line-faint */
+}
+
+/* tick mark 也换成暖石色 */
+.tick-mark {
+  background: color-mix(in oklab, #a8a29e 65%, transparent);
+}
+
+/*  甘特条颜色分层：
+     普通/链式/活跃  → orange-700 (#c2410c)
+     已完成          → stone-400  (#a8a29e, 灰色, 带整体半透明 opacity)
+     废弃            → 由 bar.js 内联 gray 处理 */
+.gantt-bar {
+  color: #c2410c;        /* redesign warm: --color-primary-hover */
+}
+
+.gantt-bar.completed {
+  color: var(--bar-muted);   /* redesign warm: --color-text-muted = #a8a29e */
+}
+
+/* --- 时间轴面板 --- */
+.gantt-timeline {
+  background: var(--bar-panel);
+  border-bottom-color: var(--bar-border);
+}
+
+/* --- 历史面板阴影：橙色调 --- */
+.history-panel.open {
+  box-shadow: 0 0.5rem 1.5rem color-mix(in oklab, var(--bar-accent) 12%, transparent);
+}
+
+/* --- 回收站面板阴影 --- */
+.recycle-panel.open {
+  box-shadow: 0 0.5rem 1.5rem color-mix(in oklab, var(--bar-danger) 12%, transparent);
+}
+

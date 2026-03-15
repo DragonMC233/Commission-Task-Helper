@@ -375,11 +375,13 @@
     // 更新bar专属CSS（使用 TW 版本，保持 rem + Tailwind token）
     const barThemeLink = document.getElementById("bar-theme-stylesheet");
     if (barThemeLink) {
+      const barCssMap = {
+        warm: `bar-warm.css?v=${BAR_THEME_VERSION}`,
+        lite: `bar-lite.css?v=${BAR_THEME_VERSION}`,
+      };
       barThemeLink.setAttribute(
         "href",
-        theme === "warm"
-          ? `bar-warm-tw.css?v=${BAR_THEME_VERSION}`
-          : `bar-standard-tw.css?v=${BAR_THEME_VERSION}`
+        barCssMap[theme] ?? `bar-standard.css?v=${BAR_THEME_VERSION}`
       );
     }
     
@@ -1150,9 +1152,7 @@
       }
 
       const bar = document.createElement("div");
-      bar.className = `gantt-bar ${
-        task.dependencyType === "line" ? "chain" : ""
-      } ${isAbandoned ? "abandoned" : ""}`;
+      bar.className = `gantt-bar ${task.dependencyType === "line" ? "chain" : ""} ${isAbandoned ? "abandoned" : ""} ${task.completed ? "completed" : ""}`;
       if (state.editMode) bar.classList.add("editable");
       if (state.selection.has(String(task.id))) bar.classList.add("selected");
       bar.dataset.id = String(task.id);
@@ -2675,6 +2675,7 @@
     const openNewTab = document.getElementById("opt-open-new-tab");
     const themeWarm = document.getElementById("theme-warm");
     const themeStandard = document.getElementById("theme-standard");
+    const themeLite = document.getElementById("theme-lite");
 
     if (wheelScroll) wheelScroll.checked = state.options.wheelScroll || false;
     if (openNewTab) openNewTab.checked = state.options.openNewTab || false;
@@ -2682,6 +2683,8 @@
     if (themeWarm && themeStandard) {
       if (state.options.theme === "warm") {
         themeWarm.checked = true;
+      } else if (state.options.theme === "lite" && themeLite) {
+        themeLite.checked = true;
       } else {
         themeStandard.checked = true;
       }
@@ -3457,8 +3460,11 @@
         if (wheelScroll) state.options.wheelScroll = wheelScroll.checked;
         if (openNewTab) state.options.openNewTab = openNewTab.checked;
 
+        const themeLite = document.getElementById("theme-lite");
         if (themeWarm && themeWarm.checked) {
           state.options.theme = "warm";
+        } else if (themeLite && themeLite.checked) {
+          state.options.theme = "lite";
         } else {
           state.options.theme = "standard";
         }
