@@ -95,7 +95,7 @@ body {
 
 .modal-backdrop {
   backdrop-filter: none;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .modal {

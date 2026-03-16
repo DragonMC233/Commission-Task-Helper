@@ -26,3 +26,10 @@
 .icon-btn.primary { background: var(--bar-accent); color: white; }
 /* 已完成任务：简约灯相同的 stone-400 灰色 */
 .gantt-bar.completed { color: #a8a29e; }
+/* 暖色主题网格线：使用 taupe 色调替代 slate */
+.grid-line {
+  background: color-mix(in oklab, var(--color-taupe-400) 30%, transparent);
+}
+.grid-line.faint {
+  background: color-mix(in oklab, var(--color-taupe-400) 12%, transparent);
+}

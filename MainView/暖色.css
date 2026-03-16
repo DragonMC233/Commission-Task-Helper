@@ -109,7 +109,7 @@ body {
 }
 
 .modal-backdrop {
-  backdrop-filter: blur(var(--modal-backdrop-blur));
+  backdrop-filter: none;
   background: rgba(75, 47, 38, 0.2);
 }
 

@@ -129,6 +129,25 @@
     return `${y}-${m}-${d}`;
   };
 
+  const formatDateTime = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    const h = String(date.getHours()).padStart(2, "0");
+    const min = String(date.getMinutes()).padStart(2, "0");
+    return `${y}-${m}-${d}T${h}:${min}`;
+  };
+
+  const preserveTime = (newDate, originalStr) => {
+    if (originalStr && typeof originalStr === 'string') {
+      const timeMatch = originalStr.match(/[T ](\d{2}:\d{2})/);
+      if (timeMatch) {
+        return `${formatDate(newDate)}T${timeMatch[1]}`;
+      }
+    }
+    return formatDateTime(newDate);
+  };
+
   const daysBetween = (start, end) => {
     const ms = end.getTime() - start.getTime();
     return Math.round(ms / 86400000);
@@ -152,27 +171,45 @@
   };
 
   const applyTheme = (theme) => {
-    // 更新根目录主题CSS
-    const themeLink = document.getElementById("theme-stylesheet");
-    if (themeLink) {
-      themeLink.setAttribute(
-        "href",
-        theme === "warm" ? "../MainView/暖色.css" : "../MainView/标准.css"
-      );
-    }
-    
-    // 更新bar专属CSS（使用 TW 版本，保持 rem + Tailwind token）
-    const barThemeLink = document.getElementById("bar-theme-stylesheet");
-    if (barThemeLink) {
-      const barCssMap = {
-        warm: `bar-warm.css?v=${BAR_THEME_VERSION}`,
-        lite: `bar-lite.css?v=${BAR_THEME_VERSION}`,
+    // 无闪切换：先加载新样式表，待其就绪后移除旧样式表
+    const swapStylesheet = (linkId, newHref) => {
+      // 清理之前未完成的 swap 链接
+      document.querySelectorAll(`[data-swap-for="${linkId}"]`).forEach(el => el.remove());
+
+      const current = document.getElementById(linkId);
+      if (!current) return;
+      if (current.getAttribute("href") === newHref) return;
+
+      const newLink = document.createElement("link");
+      newLink.rel = "stylesheet";
+      newLink.href = newHref;
+      newLink.dataset.swapFor = linkId;
+      current.parentNode.insertBefore(newLink, current.nextSibling);
+
+      newLink.onload = () => {
+        if (newLink.dataset.swapFor === linkId) {
+          current.remove();
+          newLink.id = linkId;
+          delete newLink.dataset.swapFor;
+        }
       };
-      barThemeLink.setAttribute(
-        "href",
-        barCssMap[theme] ?? `bar-standard.css?v=${BAR_THEME_VERSION}`
-      );
-    }
+    };
+
+    // 更新根目录主题CSS
+    swapStylesheet(
+      "theme-stylesheet",
+      theme === "warm" ? "../MainView/暖色.css" : "../MainView/标准.css"
+    );
+    
+    // 更新bar专属CSS
+    const barCssMap = {
+      warm: `bar-warm.css?v=${BAR_THEME_VERSION}`,
+      lite: `bar-lite.css?v=${BAR_THEME_VERSION}`,
+    };
+    swapStylesheet(
+      "bar-theme-stylesheet",
+      barCssMap[theme] ?? `bar-standard.css?v=${BAR_THEME_VERSION}`
+    );
     
     document.documentElement.setAttribute("data-theme", theme);
     updateTaskPreviewTheme(theme);
@@ -612,6 +649,7 @@
       const dl = new Date(prevTask.deadline);
       if (!Number.isNaN(dl.getTime()) && dl < todayOnly) {
         base = new Date(todayOnly.getTime());
+        base.setHours(dl.getHours(), dl.getMinutes(), 0, 0);
       }
     }
 
@@ -619,7 +657,7 @@
     const raw = Math.max(-1, rawProvided);
     const add = raw + 1; // keep same semantic mapping as app.js
     const newStart = addDays(base, add);
-    return formatDate(newStart);
+    return formatDateTime(newStart);
   };
 
   // Reflow chain successors starting from taskId recursively
@@ -678,8 +716,8 @@
       const calcEndStr = formatDate(newEndDate);
       const existingStartRaw = child.startTime || child.starttime || "";
       const existingEndRaw = child.deadline || "";
-      const finalStart = existingStartRaw.startsWith(calcStartStr) ? existingStartRaw : calcStartStr;
-      const finalEnd = existingEndRaw.startsWith(calcEndStr) ? existingEndRaw : calcEndStr;
+      const finalStart = existingStartRaw.startsWith(calcStartStr) ? existingStartRaw : preserveTime(newStartDate, existingStartRaw);
+      const finalEnd = existingEndRaw.startsWith(calcEndStr) ? existingEndRaw : preserveTime(newEndDate, existingEndRaw);
 
       state.tasks = state.tasks.map((t) => {
         if (String(t.id) !== String(child.id)) return t;
@@ -788,7 +826,7 @@
     const yearFragments = [];
     const monthFragments = [];
     const dayLabelFragments = [];
-    const dayTickFragments = [];
+
 
     let cursor = new Date(start);
     while (cursor <= end) {
@@ -876,18 +914,14 @@
           shouldShowLabel ? cursorDate.getDate() : ""
         }</div>`
       );
-      dayTickFragments.push(
-        `<div class="tick-block${alignStartClass}" style="width:${blockWidthPx}px">${
-          shouldShowLabel ? '<span class="tick-mark"></span>' : ''
-        }</div>`
-      );
+
       cursorDate = addDays(cursorDate, spanDays);
     }
 
     els.year.innerHTML = yearFragments.join("");
     els.month.innerHTML = monthFragments.join("");
     els.dayLabel.innerHTML = dayLabelFragments.join("");
-    els.dayTicks.innerHTML = dayTickFragments.join("");
+    els.dayTicks.innerHTML = "";
     els.grid.innerHTML = gridLineFragments.join("");
   };
 
@@ -963,9 +997,9 @@
       } else if (task.completed) {
         labelHtml = `<span class="bar-label-wrapper"><span class="bar-check material-icons-outlined">check</span><span class="bar-label">${task.name || "未命名"}</span></span>`;
       } else {
-        // lite 主题：根据任务类型颜色推断近似 Tailwind 文字颜色，替代固定橙色
-        const liteNodeColor = state.options.theme === "lite" ? getNearestTailwindTextHex(baseColor) : null;
-        const labelStyle = liteNodeColor ? ` style="color:${liteNodeColor}"` : "";
+        // 所有主题：根据任务类型颜色推断近似 Tailwind 文字颜色
+        const nodeColor = getNearestTailwindTextHex(baseColor);
+        const labelStyle = nodeColor ? ` style="color:${nodeColor}"` : "";
         labelHtml = `<span class="bar-label-wrapper"><span class="bar-label"${labelStyle}>${task.name || "未命名"}</span></span>`;
       }
       const innerContent = `
@@ -1280,8 +1314,8 @@
     const startRaw = task.startTime || task.starttime || "";
     const endRaw = task.deadline || "";
     // 保留原始字符串（可能含时间部分），仅在为空时用 __startDate/__endDate 兜底
-    const start = startRaw || (task.__startDate ? formatDate(task.__startDate) : "");
-    const end = endRaw || (task.__endDate ? formatDate(task.__endDate) : "");
+    const start = startRaw || (task.__startDate ? formatDateTime(task.__startDate) : "");
+    const end = endRaw || (task.__endDate ? formatDateTime(task.__endDate) : "");
     return { ...rest, startTime: start, starttime: start, deadline: end };
   };
 
@@ -1423,6 +1457,8 @@
       map.set(String(id), {
         start: new Date(task.__startDate),
         end: new Date(task.__endDate),
+        startRaw: task.startTime || task.starttime || "",
+        endRaw: task.deadline || "",
       });
     });
     return map;
@@ -1498,9 +1534,9 @@
         if (end < start) end = start;
       }
 
-      task.startTime = formatDate(start);
+      task.startTime = preserveTime(start, origin.startRaw);
       task.starttime = task.startTime;
-      task.deadline = formatDate(end);
+      task.deadline = preserveTime(end, origin.endRaw);
       task.__startDate = start;
       task.__endDate = end;
       task.__duration = daysBetween(start, end) + 1;
@@ -2261,8 +2297,8 @@
       const startRaw = t.startTime || t.starttime || "";
       const endRaw = t.deadline || "";
       // 保留原始字符串（可能含时间部分），仅在为空时用 __startDate/__endDate 兜底
-      const start = startRaw || (t.__startDate ? formatDate(t.__startDate) : "");
-      const end = endRaw || (t.__endDate ? formatDate(t.__endDate) : "");
+      const start = startRaw || (t.__startDate ? formatDateTime(t.__startDate) : "");
+      const end = endRaw || (t.__endDate ? formatDateTime(t.__endDate) : "");
       // 解构已知字段以确保输出字段顺序统一
       const {
         name, createdAt, completed, actualStartTime, completedAt,
@@ -2448,7 +2484,7 @@
              formatDate: (d) => {
                  const dt = new Date(d);
                  if (isNaN(dt)) return "";
-                 return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+                 return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}T${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
              } 
          }
      });
@@ -2461,7 +2497,12 @@
   };
 
   // 显示设置弹窗
+  let _settingsPrevTheme = null;
+
   const showSettingsModal = () => {
+    // 记录打开前的主题，用于取消时回滚
+    _settingsPrevTheme = state.options.theme || "standard";
+
     // 同步当前设置到弹窗
     const wheelScroll = document.getElementById("opt-wheel-scroll");
     const openNewTab = document.getElementById("opt-open-new-tab");
@@ -2488,11 +2529,36 @@
     }
   };
 
-  // 隐藏设置弹窗
+  // 隐藏设置弹窗（保存当前主题选择）
   const hideSettingsModal = () => {
     if (els.settingsModal) {
       els.settingsModal.classList.add("hidden");
     }
+    // 保存当前已预览的主题
+    saveOptions();
+    _settingsPrevTheme = null;
+  };
+
+  // 取消设置弹窗（回滚到打开前的主题）
+  const cancelSettingsModal = () => {
+    if (_settingsPrevTheme != null) {
+      state.options.theme = _settingsPrevTheme;
+      applyTheme(_settingsPrevTheme);
+      saveOptions();
+    }
+    _settingsPrevTheme = null;
+    if (els.settingsModal) {
+      els.settingsModal.classList.add("hidden");
+    }
+  };
+
+  // 从 radio 按钮读取当前选中的主题值
+  const getSelectedThemeFromRadios = () => {
+    const themeWarm = document.getElementById("theme-warm");
+    const themeLite = document.getElementById("theme-lite");
+    if (themeWarm && themeWarm.checked) return "warm";
+    if (themeLite && themeLite.checked) return "lite";
+    return "standard";
   };
 
 
@@ -3237,33 +3303,37 @@
       });
     }
 
+    // 主题 radio 按钮即时预览
+    ["theme-warm", "theme-standard", "theme-lite"].forEach((id) => {
+      const radio = document.getElementById(id);
+      if (radio) {
+        radio.addEventListener("change", () => {
+          const selected = getSelectedThemeFromRadios();
+          state.options.theme = selected;
+          applyTheme(selected);
+        });
+      }
+    });
+
     // 设置弹窗相关监听器
     if (els.closeSettingsBtn) {
-      els.closeSettingsBtn.addEventListener("click", hideSettingsModal);
+      els.closeSettingsBtn.addEventListener("click", cancelSettingsModal);
     }
 
     if (els.saveSettingsBtn) {
       els.saveSettingsBtn.addEventListener("click", () => {
-        // 保存设置
+        // 保存设置（主题已即时预览，这里只需保存其他选项并关闭）
         const wheelScroll = document.getElementById("opt-wheel-scroll");
         const openNewTab = document.getElementById("opt-open-new-tab");
-        const themeWarm = document.getElementById("theme-warm");
 
         if (wheelScroll) state.options.wheelScroll = wheelScroll.checked;
         if (openNewTab) state.options.openNewTab = openNewTab.checked;
 
-        const themeLite = document.getElementById("theme-lite");
-        if (themeWarm && themeWarm.checked) {
-          state.options.theme = "warm";
-        } else if (themeLite && themeLite.checked) {
-          state.options.theme = "lite";
-        } else {
-          state.options.theme = "standard";
-        }
-
-        applyTheme(state.options.theme);
+        _settingsPrevTheme = null; // 不再需要回滚
         saveOptions();
-        hideSettingsModal();
+        if (els.settingsModal) {
+          els.settingsModal.classList.add("hidden");
+        }
       });
     }
 
@@ -3301,6 +3371,11 @@
     
     window.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
+             // 设置弹窗：ESC 保持当前选择（和保存同效果）
+             if (els.settingsModal && !els.settingsModal.classList.contains("hidden")) {
+                 hideSettingsModal();
+                 return;
+             }
              const imgModal = document.getElementById("image-modal");
              if (imgModal && !imgModal.classList.contains("hidden")) {
                  imgModal.classList.add("hidden");

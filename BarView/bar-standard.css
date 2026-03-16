@@ -2,7 +2,7 @@
   --bar-bg: var(--color-slate-50);
   --bar-panel: var(--color-white);
   --bar-border: var(--color-slate-200);
-  --bar-text: var(--color-slate-900);
+  --bar-text: var(--color-slate-600);
   --bar-muted: var(--color-slate-500);
   --bar-accent: var(--color-blue-500);
   --bar-accent-soft: color-mix(in oklab, var(--color-blue-500) 15%, var(--color-white));
@@ -49,15 +49,17 @@
 }
 
 .title-main {
-  font-size: 1.5rem;
-  font-weight: 700;
+  position: relative;
+  font-size: 1.2rem;
+  font-weight: 600;
+  top: -1px  ;
 }
 
 .title-sub {
-    position: relative;
-  font-size: 1rem;
+  position: relative;
+  font-size: 0.95rem;
   color: var(--bar-muted);
-  top: 1px  ;
+  top: -1px  ;
 }
 
 /* New header control styles (replaces legacy toolbar-actions) */
@@ -171,6 +173,10 @@
   white-space: nowrap;
 }
 
+.timeline-year {
+  font-weight: 600;
+}
+
 .timeline-day-label {
   height: 1.75rem;
   font-size: 0.875rem;
@@ -179,7 +185,7 @@
 }
 
 .timeline-day-ticks {
-  height: 1.25rem;
+  height: 1.5rem;
   position: relative;
   align-items: flex-start;
 }
@@ -259,7 +265,7 @@
 /* Link styling: use CSS variables so themes can override colors without touching JS */
 .gantt-links path.gantt-link {
   stroke: var(--bar-accent);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
   fill: none;
   transition: stroke 0.15s ease;
@@ -276,7 +282,7 @@
 /* Preview link styling (shown during drag for insert/detach preview) */
 .gantt-links path.gantt-link-preview {
   stroke: var(--bar-danger);
-  stroke-width: 2;
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-dasharray: 8 4;
   fill: none;

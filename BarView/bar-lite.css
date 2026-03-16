@@ -122,3 +122,18 @@
   box-shadow: 0 0.5rem 1.5rem color-mix(in oklab, var(--bar-danger) 12%, transparent);
 }
 
+/* --- 连接线颜色：使用 muted 色调 --- */
+.gantt-links path.gantt-link,
+.gantt-links path.gantt-link.chain,
+.gantt-links path.gantt-link.dependency {
+  stroke: var(--bar-muted);
+}
+
+/* --- 保存按钮：覆盖标准蓝色为橙色主色 --- */
+.btn-save {
+  background: var(--bar-accent);
+}
+.btn-save:hover {
+  background: #c2410c;
+}
+
