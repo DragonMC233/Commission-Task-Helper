@@ -295,6 +295,82 @@
     return `rgb(${out.r}, ${out.g}, ${out.b})`;
   };
 
+  /** 标准 sRGB→OKLab 参考实现（直接 sRGB→LMS→OKLab，不经过 XYZ D65 归一化） */
+  const rgbToOklchDirect = (r, g, b) => {
+    const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    const R = lin(r), G = lin(g), B = lin(b);
+    const l = 0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B;
+    const m = 0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B;
+    const s = 0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B;
+    const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+    const L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+    const a = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_;
+    const bk = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+    const C = Math.sqrt(a * a + bk * bk);
+    let h = Math.atan2(bk, a) * (180 / Math.PI);
+    if (h < 0) h += 360;
+    return { L, C, h };
+  };
+
+  /**
+   * 从 rgb(...) 字符串计算按钮用 oklch CSS 值
+   * L 限制在 maxL 以下；chroma 保留原始值，但保证不低于色域内最大 chroma 的 minRatio，
+   * 仅对天然低饱和色相（如黄色）做提升，不降低其他颜色
+   */
+  const computeButtonOklch = (rgbStr, { maxL = 0.9, yellowMaxL = 0.95, minRatio = 0.5, yellowChromaBoost = 1.15, yellowHueShiftMax = 6 } = {}) => {
+    const parsed = parseRgbString(rgbStr);
+    if (!parsed) return null;
+    const oklch = rgbToOklchDirect(parsed.r, parsed.g, parsed.b);
+    const isYellow = oklch.h >= 70 && oklch.h <= 120;
+    // 黄色色相明度放宽，chroma 比例上浮，色相向暖色非线性偏移
+    const effectiveMaxL = isYellow ? yellowMaxL : maxL;
+    const L = Math.min(oklch.L, effectiveMaxL);
+    const maxC = maxChromaInSrgb(L, oklch.h);
+    const effectiveRatio = isYellow ? minRatio * yellowChromaBoost : minRatio;
+    const C = Math.max(oklch.C, maxC * effectiveRatio);
+    // 非线性色相偏移：以 109°（柠檬黄）为峰值
+    // 左侧 [80, 109] sqrt 曲线爬升，右侧 [109, 120] 二次曲线衰减
+    let h = oklch.h;
+    if (isYellow && yellowHueShiftMax > 0) {
+      let shift = 0;
+      if (h >= 80 && h <= 109) {
+        shift = yellowHueShiftMax * Math.sqrt((h - 80) / 29);
+      } else if (h > 109 && h <= 120) {
+        const t = (120 - h) / 11;
+        shift = yellowHueShiftMax * t * t;
+      }
+      h -= shift;
+    }
+    return `oklch(${(L * 100).toFixed(2)}% ${C.toFixed(4)} ${h.toFixed(4)})`;
+  };
+
+  /** 在给定 (L, h) 下，二分查找 sRGB 色域内可用的最大 chroma */
+  const maxChromaInSrgb = (L, h) => {
+    const hr = (h * Math.PI) / 180;
+    const cosH = Math.cos(hr), sinH = Math.sin(hr);
+    let lo = 0, hi = 0.4;
+    for (let i = 0; i < 24; i++) {
+      const mid = (lo + hi) / 2;
+      if (isOklchInSrgb(L, mid, cosH, sinH)) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  /** 判断 (L, C, h) 是否在 sRGB [0,1] 范围内（使用预计算的 cosH/sinH） */
+  const isOklchInSrgb = (L, C, cosH, sinH) => {
+    const a = C * cosH, b = C * sinH;
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.2914855480 * b;
+    const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_;
+    const R =  4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    const G = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    const B = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    const eps = -0.001;
+    return R >= eps && R <= 1.001 && G >= eps && G <= 1.001 && B >= eps && B <= 1.001;
+  };
+
   /** 计算线性化相对亮度（WCAG） */
   const luminanceFromRgb = ({ r, g, b }) => {
     const srgb = [r / 255, g / 255, b / 255].map((c) => {
@@ -386,6 +462,9 @@
     oklchToRgb,
     computeOklchAdjustedRing,
     computeRingFromHex,
+    rgbToOklchDirect,
+    computeButtonOklch,
+    maxChromaInSrgb,
     luminanceFromRgb,
     // UI 工具
     getIconClassForSource,

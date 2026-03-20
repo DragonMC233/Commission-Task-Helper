@@ -164,6 +164,11 @@ class TaskManager {
         this.toggleTimer(currentId);
         return;
       }
+      const pauseBtn = target.closest(".pause-btn");
+      if (pauseBtn) {
+        this.togglePause(currentId);
+        return;
+      }
     });
 
     // 确保预览中的输入变更（如耗时输入框）也会被处理
@@ -237,6 +242,12 @@ class TaskManager {
     // 计时按钮
     if (target.closest(".timer-btn")) {
       this.toggleTimer(taskId);
+      return;
+    }
+
+    // 暂停/恢复委托按钮
+    if (target.closest(".pause-btn")) {
+      this.togglePause(taskId);
       return;
     }
 
@@ -544,6 +555,8 @@ class TaskManager {
     this.showQuickAddInputs = true;
     // 是否允许重复节点（默认允许）
     this.allowDuplicateNodes = true;
+    // 暂停实时预览：每次加载自动将活跃暂停应用为 deadline 延期
+    this.livePreviewCurrentPause = false;
     // HSV 可调上限（用于调试，取值范围 0..1）。
     // 在页面控制台修改 `window._hsvDebug.maxS` / `window._hsvDebug.maxV` 即可实时调整。
     this.hsvMaxS = 1;
@@ -971,6 +984,7 @@ class TaskManager {
       paymentMode,
       paymentRecords,
       urgentA,
+      paused, pausedAt, totalPausedDays, pauseHistory,
       // eslint-disable-next-line no-unused-vars
       __duration: _dur, __endDate: _end, __startDate: _start,
       ...rest
@@ -1011,6 +1025,11 @@ class TaskManager {
     if (paymentMode !== undefined) result.paymentMode = paymentMode;
     if (paymentRecords !== undefined) result.paymentRecords = paymentRecords;
     if (urgentA !== undefined) result.urgentA = urgentA;
+    if (paused !== undefined) result.paused = paused;
+    if (pausedAt !== undefined) result.pausedAt = pausedAt;
+    if (totalPausedDays !== undefined) result.totalPausedDays = totalPausedDays;
+    if (pauseHistory !== undefined) result.pauseHistory = pauseHistory;
+    if (task.pausePreDeadline !== undefined) result.pausePreDeadline = task.pausePreDeadline;
     // __duration/__endDate/__startDate 由 BarView 运行时计算，不持久化
     return result;
   }
@@ -1962,6 +1981,11 @@ class TaskManager {
         typeof data.allowDuplicateNodes === "boolean"
           ? data.allowDuplicateNodes
           : this.allowDuplicateNodes || false;
+      // 暂停实时预览
+      this.livePreviewCurrentPause =
+        typeof data.livePreviewCurrentPause === "boolean"
+          ? data.livePreviewCurrentPause
+          : this.livePreviewCurrentPause || false;
 
       // 清理超过保留期的回收站任务（含删除日期标记）
       const purged = this.purgeExpiredRecycleTasks(30);
@@ -1997,6 +2021,8 @@ class TaskManager {
     try { this.scanOverdueChains(); } catch (e) { console.warn("scanOverdueChains failed on load", e); }
     // 全量链重算：修正因数据过期导致的所有链式任务日期偏差
     try { this.scanAllChains(); } catch (e) { console.warn("scanAllChains failed on load", e); }
+    // 暂停实时预览：将活跃暂停自动应用为 deadline 延期
+    try { this.applyCurrentPausePreview(); } catch (e) { console.warn("applyCurrentPausePreview failed", e); }
   }
 
   // 清理超过 retentionDays 的回收站任务；返回是否发生变更
@@ -2017,6 +2043,38 @@ class TaskManager {
     if (changed) this.recycleBin = kept;
     return changed;
   }
+  // ── 暂停实时预览 ──
+  // 将当前活跃的暂停（paused=true）视为已发生的延期，自动延长 deadline
+  // 对所有暂停任务生效，幂等（使用 pausePreDeadline 作为基准）
+  applyCurrentPausePreview() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tasks = Array.isArray(this.tasks) ? this.tasks : [];
+    tasks.forEach(task => {
+      if (!task || !task.paused || !task.pausedAt) return;
+      const pausedAt = new Date(task.pausedAt);
+      pausedAt.setHours(0, 0, 0, 0);
+      const pausedDays = Math.floor((today - pausedAt) / 86400000);
+      if (pausedDays < 1) return;
+      // 首次：保存原始 deadline 作为不随预览变化的基准
+      if (!task.pausePreDeadline && task.deadline) {
+        task.pausePreDeadline = task.deadline;
+      }
+      if (task.pausePreDeadline) {
+        const baseDeadline = new Date(task.pausePreDeadline);
+        if (!isNaN(baseDeadline.getTime())) {
+          const extendedDeadline = new Date(baseDeadline);
+          extendedDeadline.setDate(extendedDeadline.getDate() + pausedDays);
+          const formatted = this.formatDateTimeLocal(extendedDeadline);
+          if (task.deadline !== formatted) {
+            task.deadline = formatted;
+            this.adjustChainFrom(task);
+          }
+        }
+      }
+    });
+  }
+
   resetTimerOnPageLoad() {
     if (this.currentTimer) {
       clearInterval(this.currentTimer);
@@ -2095,6 +2153,7 @@ class TaskManager {
                     showQuickAddInputs: this.showQuickAddInputs,
                     allowDuplicateNodes: !!this.allowDuplicateNodes,
                     dateOnlyDeadlineMode: !!this.dateOnlyDeadlineMode,
+                    livePreviewCurrentPause: !!this.livePreviewCurrentPause,
                     statistics:
                       this.statistics || this.createEmptyStatistics(),
                   }),
@@ -3738,9 +3797,18 @@ class TaskManager {
   getTimerButton(task) {
     if (!task || task.completed) return "";
     const running = this.isTimerRunning(task.id);
-    const notStarted = !running && !task.actualStartTime;
-    const stateClass = running ? "running" : notStarted ? "not-started" : "";
-    return `<div class="mt-3 flex justify-center"><button class="timer-btn ${stateClass} text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}"><span class="material-icons text-sm mr-2">${this.getTimerIcon(running)}</span><span class="text-sm font-medium">${this.getTimerLabel(running, !!task.actualStartTime)}</span></button></div>`;
+    const isPaused = !!task.paused;
+    const type = this.taskTypes.find((t) => t.id === task.type);
+    const typeColor = type ? type.color : "#95A5A6";
+    const btnBg = this.computeButtonBgFromHex(typeColor);
+    const timerBtn = `<button class="timer-btn text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}" style="background:${btnBg}"><span class="material-icons text-sm mr-2">${this.getTimerIcon(running)}</span><span class="text-sm font-medium">${this.getTimerLabel(running, !!task.actualStartTime, isPaused)}</span></button>`;
+    // 暂停/恢复按钮（已完成和废弃不显示）
+    if (task.abandoned) return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}</div>`;
+    const pauseIcon = isPaused ? "replay" : "play_disabled";
+    const pauseClass = isPaused ? "pause-btn--paused" : "";
+    const pauseBgStyle = isPaused ? "" : `background:${btnBg};`;
+    const pauseBtn = `<button class="pause-btn ${pauseClass}" data-task-id="${task.id}" data-testid="pause-btn-${task.id}" style="${pauseBgStyle}"><span class="material-icons-round text-sm">${pauseIcon}</span></button>`;
+    return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}${pauseBtn}</div>`;
   }
 
   updateTimerButtonUI(task) {
@@ -3754,24 +3822,36 @@ class TaskManager {
       card.querySelector(".timer-btn");
     if (!timerBtn) return;
     const running = this.isTimerRunning(task.id);
-    const notStarted = !running && !task.actualStartTime;
-    timerBtn.classList.toggle("running", running);
-    timerBtn.classList.toggle("not-started", notStarted);
+    const isPaused = !!task.paused;
     const icon = timerBtn.querySelector(".material-icons");
     if (icon) icon.textContent = this.getTimerIcon(running);
     const textSpan =
       timerBtn.querySelector(".text-sm.font-medium") ||
       timerBtn.querySelector("span:last-child");
-    if (textSpan) textSpan.textContent = this.getTimerLabel(running, !!task.actualStartTime);
+    if (textSpan) textSpan.textContent = this.getTimerLabel(running, !!task.actualStartTime, isPaused);
+    // 更新暂停按钮状态
+    const pauseBtn = card.querySelector(`.pause-btn[data-task-id="${task.id}"]`);
+    const type = this.taskTypes.find((t) => t.id === task.type);
+    const typeColor = type ? type.color : "#95A5A6";
+    const btnBg = this.computeButtonBgFromHex(typeColor);
+    // 计时按钮也用 oklch 颜色
+    if (timerBtn) timerBtn.style.background = btnBg;
+    if (pauseBtn) {
+      pauseBtn.classList.toggle("pause-btn--paused", isPaused);
+      const pauseIcon = pauseBtn.querySelector(".material-icons-round");
+      if (pauseIcon) pauseIcon.textContent = isPaused ? "replay" : "play_disabled";
+      pauseBtn.style.background = isPaused ? "" : btnBg;
+    }
   }
 
   getTimerIcon(running) {
     return running ? "stop" : "timer";
   }
 
-  // running: 是否正在计时；hasActualStart：是否已有实际开始时间
-  getTimerLabel(running, hasActualStart = false) {
+  // running: 是否正在计时；hasActualStart：是否已有实际开始时间；paused: 是否暂停中
+  getTimerLabel(running, hasActualStart = false, paused = false) {
     if (running) return "结束画画计时";
+    if (paused) return "继续委托并计时";
     return hasActualStart ? "开始画画计时" : "开始首次画画计时";
   }
 
@@ -3844,12 +3924,12 @@ class TaskManager {
                <!-- 标题模块 -->
                <div class="task-card-header" style="background: ${headerBg}; padding: 1.5rem; padding-block-end: 0; border-top-left-radius: 1rem; border-top-right-radius: 1rem;">
                 <div class="flex items-start justify-between" style="transform: translateY(-5px); margin-bottom: -5px; line-height:1.15;">
-                    <div class="flex justify-between items-center flex-1">
-                        <div class="flex-1">
+                    <div class="flex justify-between items-center flex-1" style="min-width:0;">
+                        <div class="flex-1" style="min-width:0;">
                             <h3 class="font-bold text-xl ${
                               task.completed ? "line-through" : ""
-                            }" style="color: inherit; margin:0; line-height:1.15;">${
-      task.name
+                            }" style="color: inherit; margin:0; line-height:1.15; overflow-wrap:anywhere;">${
+      task.name.replace(/_/g, '_<wbr>')
     }</h3>
                         </div>
                     </div>
@@ -3949,6 +4029,11 @@ class TaskManager {
                     ${
                       (hasPayment || netIncome > 0) && !task.abandoned
                         ? `<div class="daily-time-badge" data-variant="daily-time">¥${hourlyRate || "?"}/h</div>`
+                        : ""
+                    }
+                    ${
+                      task.paused
+                        ? `<div class="daily-time-badge" data-variant="paused">暂停中</div>`
                         : ""
                     }
                 </div>
@@ -6445,6 +6530,12 @@ class TaskManager {
     return `rgb(${out.r}, ${out.g}, ${out.b})`;
   }
 
+  // 使用 OKLCH 计算按钮背景色（基于 header 同色），L 不超过 maxL，C 限制在合理范围
+  computeButtonBgFromHex(hex, maxL = 0.9) {
+    const headerRgb = this.computeLightBgFromHex(hex);
+    return window.taskUtils.computeButtonOklch(headerRgb, { maxL }) || '#6B7280';
+  }
+
   // 将输入颜色（hex 或 rgb(...)）与白色按百分比混合，percent 范围 0..1
   blendWithWhite(color, percent = 0.7) { return window.taskUtils.blendWithWhite(color, percent); }
 
@@ -7059,7 +7150,9 @@ class TaskManager {
   getTaskStartDateString(task) {
     if (!task) return "";
     const start =
-      task.starttime || task.startDate || task.deadline || task.createdAt;
+      (task.urgentA && task.actualStartTime)
+        ? task.actualStartTime
+        : (task.startTime || task.starttime || task.startDate || task.pausePreDeadline || task.deadline || task.createdAt);
     if (!start) return "";
     return this.formatDate(new Date(start));
   }
@@ -7206,43 +7299,66 @@ class TaskManager {
       }
       const lastDate = clampDate(visualEnd);
 
-      // 月内的日索引（0 起始）
-      const startDayIndex = Math.max(0, startDate.getDate() - 1);
-      const endDayIndex = Math.max(0, lastDate.getDate() - 1);
+      // 记录原始截止时间戳（排序用，不随分段变化）
+      const originalEndTs = endDate
+        ? new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate()).getTime()
+        : new Date(startDateParsed.getFullYear(), startDateParsed.getMonth(), startDateParsed.getDate()).getTime();
 
-      // 网格中的绝对单元索引（0 起始）
-      let cursor = firstDayIndex + startDayIndex;
-      const endIndex = Math.min(firstDayIndex + endDayIndex, maxCells - 1);
-
-      while (cursor <= endIndex) {
-        const week = Math.floor(cursor / 7);
-        const weekEnd = week * 7 + 6;
-        const segStart = cursor;
-        const segEnd = Math.min(endIndex, weekEnd);
-        const startCol = (segStart % 7) + 1;
-        const endCol = (segEnd % 7) + 2; // 网格列结束为半开区间（exclusive）
-        // 记录原始截止时间戳（若无 deadline 则使用 start）
-        const originalEndTs = endDate
-          ? new Date(
-              endDate.getFullYear(),
-              endDate.getMonth(),
-              endDate.getDate()
-            ).getTime()
-          : new Date(
-              startDateParsed.getFullYear(),
-              startDateParsed.getMonth(),
-              startDateParsed.getDate()
-            ).getTime();
-        weekSegments[week].push({
-          task,
-          startCol,
-          endCol,
-          ring,
-          blendedBg,
-          endDateValue: originalEndTs,
+      // 计算暂停感知的日期区间（跨天暂停 > 1 天时拆分，中间间隔不渲染）
+      const calPauseRanges = (() => {
+        let crossDayPauses = (task.pauseHistory || []).filter(entry => {
+          if (!entry.pausedAt || !entry.resumedAt) return false;
+          const pD = new Date(entry.pausedAt); pD.setHours(0, 0, 0, 0);
+          const rD = new Date(entry.resumedAt); rD.setHours(0, 0, 0, 0);
+          return (rD - pD) / 86400000 > 1;
         });
-        cursor = segEnd + 1;
-      }
+        // 暂停实时预览：将当前活跃暂停加入虚拟已完成条目
+        if (task.paused && task.pausedAt) {
+          const today4 = new Date(); today4.setHours(0, 0, 0, 0);
+          const pD4    = new Date(task.pausedAt); pD4.setHours(0, 0, 0, 0);
+          if ((today4 - pD4) / 86400000 > 1) {
+            crossDayPauses = [...crossDayPauses,
+              { pausedAt: task.pausedAt, resumedAt: today4.toISOString() }];
+          }
+        }
+        if (crossDayPauses.length === 0) return [{ start: startDateParsed, end: visualEnd }];
+        const sorted = [...crossDayPauses].sort((a, b) => new Date(a.pausedAt) - new Date(b.pausedAt));
+        const ranges = [];
+        let cur = new Date(startDateParsed);
+        for (const entry of sorted) {
+          const pD = new Date(entry.pausedAt); pD.setHours(0, 0, 0, 0);
+          const rD = new Date(entry.resumedAt); rD.setHours(0, 0, 0, 0);
+          if (rD <= cur) continue;
+          if (pD > cur) ranges.push({ start: new Date(cur), end: new Date(pD) });
+          cur = new Date(rD);
+        }
+        if (cur <= visualEnd) ranges.push({ start: cur, end: new Date(visualEnd) });
+        return ranges.length > 0 ? ranges : [{ start: startDateParsed, end: visualEnd }];
+      })();
+
+      // 对每个日期区间做周分割并推入 weekSegments
+      calPauseRanges.forEach(range => {
+        // 跳过完全在本月范围之外的区间
+        if (range.end < monthStart || range.start > monthEnd) return;
+        const rStartClamped = clampDate(range.start);
+        const rEndClamped   = clampDate(range.end);
+        const rStartDayIdx  = Math.max(0, rStartClamped.getDate() - 1);
+        const rEndDayIdx    = Math.max(0, rEndClamped.getDate() - 1);
+
+        let cursor = firstDayIndex + rStartDayIdx;
+        const endIndex = Math.min(firstDayIndex + rEndDayIdx, maxCells - 1);
+
+        while (cursor <= endIndex) {
+          const week     = Math.floor(cursor / 7);
+          const weekEnd  = week * 7 + 6;
+          const segStart = cursor;
+          const segEnd   = Math.min(endIndex, weekEnd);
+          const startCol = (segStart % 7) + 1;
+          const endCol   = (segEnd % 7) + 2;
+          weekSegments[week].push({ task, startCol, endCol, ring, blendedBg, endDateValue: originalEndTs });
+          cursor = segEnd + 1;
+        }
+      });
     });
 
     // 为每个周的 timeline 容器渲染任务条
@@ -7353,7 +7469,7 @@ class TaskManager {
                                 <div class="flex-1">
                                     <h4 class="font-medium text-stone-800 text-sm ${
                                       task.completed ? "line-through" : ""
-                                    }">${task.name}</h4>
+                                    }" style="overflow-wrap:anywhere;">${task.name.replace(/_/g, '_<wbr>')}</h4>
                                     <p class="text-xs text-stone-500">${typeName}</p>
                                 </div>
                             </div>
@@ -7827,12 +7943,82 @@ class TaskManager {
     });
   }
   toggleTimer(taskId) {
+    const task = this.tasks.find((t) => t.id === taskId);
     if (this.isTimerRunning(taskId)) {
       this.stopTimer(taskId);
     } else {
+      // 如果任务处于暂停状态，点击计时按钮时同时恢复委托
+      if (task && task.paused) {
+        this.resumeTask(taskId);
+      }
       this.startTimer(taskId);
     }
   }
+
+  // ─── 暂停/恢复委托 ─────────────────────────────────────────
+  pauseTask(taskId) {
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task || task.completed || task.abandoned || task.paused) return;
+    // 如果正在计时，先自动停止并保存工时
+    if (this.isTimerRunning(taskId)) {
+      this.stopTimer(taskId);
+    }
+    // 暂停实时预览：首次暂停时保存原始 deadline
+    if (task.deadline && !task.pausePreDeadline) {
+      task.pausePreDeadline = task.deadline;
+    }
+    task.paused = true;
+    task.pausedAt = new Date().toISOString();
+    if (!Array.isArray(task.pauseHistory)) task.pauseHistory = [];
+    task.pauseHistory.push({ pausedAt: task.pausedAt });
+    this.saveAllData();
+    this.renderTasks(taskId);
+    this.refreshTaskPreviewIfOpen(taskId);
+    this.showMessage(`委托"${task.name}"已暂停`);
+  }
+
+  resumeTask(taskId) {
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task || !task.paused) return;
+    const now = new Date();
+    const pausedAt = new Date(task.pausedAt);
+    const pausedMs = now.getTime() - pausedAt.getTime();
+    const pausedDays = pausedMs / (24 * 60 * 60 * 1000);
+    task.totalPausedDays = (task.totalPausedDays || 0) + pausedDays;
+    // 自动顺延 deadline（使用 pausePreDeadline 作为基准，避免与 livePreviewCurrentPause 双计）
+    const baseDeadline4Resume = task.pausePreDeadline
+      ? new Date(task.pausePreDeadline)
+      : (task.deadline ? new Date(task.deadline) : null);
+    if (baseDeadline4Resume && !isNaN(baseDeadline4Resume.getTime())) {
+      baseDeadline4Resume.setTime(baseDeadline4Resume.getTime() + pausedMs);
+      task.deadline = this.formatDateTimeLocal(baseDeadline4Resume);
+    }
+    task.pausePreDeadline = undefined;
+    // 填充 pauseHistory 的 resumedAt
+    if (Array.isArray(task.pauseHistory) && task.pauseHistory.length > 0) {
+      const last = task.pauseHistory[task.pauseHistory.length - 1];
+      if (!last.resumedAt) last.resumedAt = now.toISOString();
+    }
+    task.paused = false;
+    task.pausedAt = null;
+    // 递归顺延后续链式任务
+    this.adjustChainFrom(task);
+    this.saveAllData();
+    this.renderTasks(taskId);
+    this.refreshTaskPreviewIfOpen(taskId);
+    this.showMessage(`委托"${task.name}"已恢复`);
+  }
+
+  togglePause(taskId) {
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (task.paused) {
+      this.resumeTask(taskId);
+    } else {
+      this.pauseTask(taskId);
+    }
+  }
+
   initOrientationDetection() {
     this.checkOrientation();
     window.addEventListener("resize", () => {

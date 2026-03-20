@@ -195,11 +195,11 @@
     }" style="${outerInlineStyle}">
                <div class="task-card-header" style="background: ${headerBg}; padding: 1.5rem; padding-block-end: 0; border-top-left-radius: 1rem; border-top-right-radius: 1rem;">
                 <div class="flex items-start justify-between" style="transform: translateY(-5px); margin-bottom: -5px; line-height:1.15;">
-                    <div class="flex justify-between items-center flex-1">
-                        <div class="flex-1">
+                    <div class="flex justify-between items-center flex-1" style="min-width:0;">
+                        <div class="flex-1" style="min-width:0;">
                             <h3 class="font-bold text-xl ${
                               task.completed ? "line-through" : ""
-                            }" style="color: inherit; margin:0; line-height:1.15;">${task.name}</h3>
+                            }" style="color: inherit; margin:0; line-height:1.15; overflow-wrap:anywhere;">${task.name.replace(/_/g, '_<wbr>')}</h3>
                         </div>
                     </div>
                     <div class="flex flex-col items-start gap-1">
@@ -290,6 +290,11 @@
                     ${
                       (hasPayment || netIncome > 0) && !task.abandoned
                         ? `<div class="daily-time-badge" data-variant="daily-time">¥${hourlyRate || "?"}/h</div>`
+                        : ""
+                    }
+                    ${
+                      task.paused
+                        ? `<div class="daily-time-badge" data-variant="paused">暂停中</div>`
                         : ""
                     }
                 </div>

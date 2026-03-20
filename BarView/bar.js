@@ -116,6 +116,12 @@
     return `rgb(${out.r}, ${out.g}, ${out.b})`;
   };
 
+  // 使用 OKLCH 计算按钮背景色（基于 header 同色），L 不超过 maxL，C 限制在合理范围
+  const computeButtonBgFromHex = (hex, maxL = 0.9) => {
+    const headerRgb = computeLightBgFromHex(hex);
+    return window.taskUtils.computeButtonOklch(headerRgb, { maxL }) || '#6B7280';
+  };
+
   const addDays = (date, days) => {
     const d = new Date(date);
     d.setDate(d.getDate() + days);
@@ -236,6 +242,17 @@
       safeEnd = abandonedEnd < start ? start : abandonedEnd;
     } else if (!task.completed && today && safeEnd < today) {
       safeEnd = today;
+    }
+    // 暂停实时预览：当前活跃暂停延伸 __endDate
+    if (task.paused && task.pausedAt) {
+      const today2 = toDateOnly(new Date());
+      const pD2   = toDateOnly(task.pausedAt);
+      if (today2 && pD2 && today2 > pD2) {
+        const extraDays = daysBetween(pD2, today2);
+        const extended  = new Date(safeEnd);
+        extended.setDate(extended.getDate() + extraDays);
+        safeEnd = extended;
+      }
     }
     return {
       ...task,
@@ -961,9 +978,9 @@
       const effectiveRing = isAbandoned ? "#94a3b8" : ring;
 
       // ── 实际开始时间分段计算 ──
-      // 如果任务已完成且有 actualStartTime，且落在 bar 范围内，则计算分割像素位置
+      // 如果任务有 actualStartTime（不论完成状态），且落在 bar 范围内，则计算分割像素位置
       let splitPx = null;
-      if (task.completed && task.actualStartTime) {
+      if (task.actualStartTime) {
         const actualStartDate = toDateOnly(task.actualStartTime);
         if (actualStartDate) {
           const daysFromStart = daysBetween(task.__startDate, actualStartDate);
@@ -1010,13 +1027,13 @@
 
       if (splitPx !== null) {
         // ── 双段模式 ──
-        // 父层承载 userCoeff 作为整体不透明度（文字/点同步变暗到 userCoeff）
-        // 左段（实际开始前）：相对 opacity 0.2 => 视觉 userCoeff × 0.2（偏暗）
-        // 右段（实际开始后）：相对 opacity 0.7 => 视觉 userCoeff × 0.7（偏亮）
+        // 父层承载整体不透明度（已完成=userCoeff，进行中=1，废弃=0.45）
+        // 左段（实际开始前）：相对 opacity 0.2 => 视觉 opacity × 0.2（偏暗）
+        // 右段（实际开始后）：相对 opacity 0.7 => 视觉 opacity × 0.7（偏亮）
         // 两段均为全圆角 pill；在分割点互相叠加 barHeight/2 px → 形成「(O(O」圆形衔接
         // overflow:hidden 让两段 pill 被 bar 自身 border-radius 完全裁剪，端点完美对齐
         bar.style.background = "transparent";
-        bar.style.opacity = String(userCoeff);
+        bar.style.opacity = String(opacity);
         bar.style.overflow = "hidden";
 
         const overlapPx = Math.round(barHeight / 2); // ≈ 17px，使两端圆形自然衔接
@@ -1072,7 +1089,135 @@
         bar.innerHTML = innerContent;
       }
 
-      els.bars.appendChild(bar);
+      // ── 暂停断开渲染：跨天暂停拆为独立 bar 片段 + 虚线桥接 ──
+      let crossDayPauseEntries = (task.pauseHistory || []).filter(entry => {
+        if (!entry.pausedAt || !entry.resumedAt) return false;
+        const pDate = toDateOnly(entry.pausedAt);
+        const rDate = toDateOnly(entry.resumedAt);
+        return pDate && rDate && daysBetween(pDate, rDate) > 1;
+      });
+    // 暂停实时预览：将当前活跃暂停加入虚拟已完成条目
+      if (task.paused && task.pausedAt) {
+        const today3 = toDateOnly(new Date());
+        const pD3    = toDateOnly(task.pausedAt);
+        if (today3 && pD3 && daysBetween(pD3, today3) > 1) {
+          crossDayPauseEntries = [...crossDayPauseEntries,
+            { pausedAt: task.pausedAt, resumedAt: today3.toISOString() }];
+        }
+      }
+
+      if (crossDayPauseEntries.length === 0) {
+        // 无跨天暂停：直接追加原 bar
+        els.bars.appendChild(bar);
+      } else {
+        // 计算各片段（相对 bar 左边的 px 偏移）
+        const sortedPauses = [...crossDayPauseEntries].sort(
+          (a, b) => new Date(a.pausedAt) - new Date(b.pausedAt)
+        );
+        const segs = [];
+        let curPx = 0;
+        for (const entry of sortedPauses) {
+          const pDate      = toDateOnly(entry.pausedAt);
+          const rDate      = toDateOnly(entry.resumedAt);
+          const gapStartPx = daysBetween(task.__startDate, pDate) * dayWidth;
+          const gapEndPx   = daysBetween(task.__startDate, rDate) * dayWidth;
+          if (gapStartPx > curPx) {
+            segs.push({ relLeftPx: curPx, widthPx: gapStartPx - curPx });
+          }
+          curPx = gapEndPx;
+        }
+        const finalWidthPx = width - curPx;
+        if (finalWidthPx > 0) segs.push({ relLeftPx: curPx, widthPx: finalWidthPx });
+
+        if (segs.length < 2) {
+          // 兜底：片段不足时回退
+          els.bars.appendChild(bar);
+        } else {
+          segs.forEach((seg, idx) => {
+            const segBar = document.createElement("div");
+            segBar.className    = bar.className;
+            segBar.dataset.id   = String(task.id);
+            segBar.title        = fullTitle;
+            segBar.style.left        = `${left + seg.relLeftPx}px`;
+            segBar.style.top         = `${top}px`;
+            segBar.style.width       = `${seg.widthPx}px`;
+            segBar.style.height      = `${barHeight}px`;
+            segBar.style.borderColor = effectiveRing;
+
+            // 每个片段都包含标签+端点
+            const segContent = innerContent;
+
+            // 检测 splitPx 是否落在当前片段范围内
+            const segSplitPx = (splitPx !== null
+              && splitPx > seg.relLeftPx
+              && splitPx < seg.relLeftPx + seg.widthPx)
+              ? (splitPx - seg.relLeftPx)
+              : null;
+
+            if (segSplitPx !== null) {
+              // 该片段内含实际开始时间分割点 → 双背景处理
+              segBar.style.background = "transparent";
+              segBar.style.opacity    = String(opacity);
+              segBar.style.overflow   = "hidden";
+              const op2 = Math.round(barHeight / 2);
+              const segL = document.createElement("div");
+              segL.style.cssText = [
+                "position:absolute","top:0","left:0",
+                `width:${segSplitPx + op2}px`,
+                "height:100%","border-radius:9999px",
+                `background:${effectiveBarBg}`,"opacity:0.2","pointer-events:none",
+              ].join(";") + ";";
+              const segR = document.createElement("div");
+              segR.style.cssText = [
+                "position:absolute","top:0",
+                `left:${Math.max(0, segSplitPx - op2)}px`,
+                "right:0","height:100%","border-radius:9999px",
+                `background:${effectiveBarBg}`,"opacity:0.7","pointer-events:none",
+              ].join(";") + ";";
+              const segRing = document.createElement("div");
+              segRing.style.cssText = [
+                "position:absolute","top:0",
+                `left:${Math.max(0, segSplitPx - op2)}px`,
+                `width:${barHeight}px`,"height:100%","border-radius:9999px",
+                `border:0.75px solid ${effectiveRing}`,
+                "background:transparent","box-sizing:border-box",
+                "clip-path:inset(0 50% 0 0)","opacity:0.5","pointer-events:none",
+              ].join(";") + ";";
+              segBar.innerHTML = segContent;
+              segBar.insertBefore(segR, segBar.firstChild);
+              segBar.insertBefore(segL, segBar.firstChild);
+              segBar.insertBefore(segRing, segR.nextSibling);
+            } else {
+              segBar.style.background = effectiveBarBg;
+              segBar.style.opacity    = String(opacity);
+              segBar.innerHTML = segContent;
+            }
+            els.bars.appendChild(segBar);
+          });
+
+          // 虚线桥接线（连接相邻片段）
+          for (let i = 0; i < segs.length - 1; i++) {
+            const s1 = segs[i];
+            const s2 = segs[i + 1];
+            const bridgeLeft  = left + s1.relLeftPx + s1.widthPx;
+            const bridgeWidth = s2.relLeftPx - (s1.relLeftPx + s1.widthPx);
+            if (bridgeWidth <= 0) continue;
+            const bridge = document.createElement("div");
+            bridge.className = "bar-pause-bridge";
+            bridge.style.cssText = [
+              "position:absolute",
+              `left:${bridgeLeft}px`,
+              `top:${top + barHeight / 2 - 0.75}px`,
+              `width:${bridgeWidth}px`,
+              "height:1.5px",
+              `border-top:1.5px dashed ${effectiveRing}`,
+              "opacity:0.5",
+              "pointer-events:none",
+            ].join(";") + ";";
+            els.bars.appendChild(bridge);
+          }
+        }
+      }
     });
 
     state.layout = layout;
@@ -2307,6 +2452,7 @@
         id, lineTaskId, source, type, image, nodes, payment, progress,
         w, h,
         abandoned, abandonedAt, paymentMode, paymentRecords, urgentA,
+        paused, pausedAt, totalPausedDays, pauseHistory,
         __duration, __endDate, __startDate,
         // eslint-disable-next-line no-unused-vars
         startTime: _st, starttime: _stt, deadline: _dl,
@@ -2347,6 +2493,11 @@
       if (paymentMode !== undefined) taskOut.paymentMode = paymentMode;
       if (paymentRecords !== undefined) taskOut.paymentRecords = paymentRecords;
       if (urgentA !== undefined) taskOut.urgentA = urgentA;
+      if (paused !== undefined) taskOut.paused = paused;
+      if (pausedAt !== undefined) taskOut.pausedAt = pausedAt;
+      if (totalPausedDays !== undefined) taskOut.totalPausedDays = totalPausedDays;
+      if (pauseHistory !== undefined) taskOut.pauseHistory = pauseHistory;
+      if (t.pausePreDeadline !== undefined) taskOut.pausePreDeadline = t.pausePreDeadline;
       // __duration/__endDate/__startDate 由 normalizeTask 运行时计算，不持久化
       return taskOut;
     });
@@ -2585,12 +2736,16 @@
 
     /* badges - let theme CSS control colors, just ensure layout */
     .deadline-badge, .daily-time-badge { border-radius: 9999px; padding: 4px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+    .daily-time-badge[data-variant="paused"] { background: var(--color-red-400, #f87171); color: #fff; }
 
     /* timer button - let theme CSS control if needed, but provide base */
-    .timer-btn { background: #ffa23f; color: #ffffff; padding: 0.5rem 1rem; border-radius: 9999px; transition: background 0.2s ease, filter 0.2s ease; }
-    .timer-btn.running { background: #ef4444; }
-    .timer-btn.not-started { background: #a3e635; color: #ffffff; }
+    .timer-btn { color: #ffffff; padding: 0.5rem 1rem; border-radius: 9999px; transition: background 0.2s ease, filter 0.2s ease; }
     .timer-btn:hover { filter: brightness(0.95); }
+
+    /* pause/resume button */
+    .pause-btn { width: 42px; height: 42px; border-radius: 9999px; display: inline-flex; align-items: center; justify-content: center; border: none; cursor: pointer; background: #a8a29e; color: #fff; transition: background 0.2s ease, filter 0.2s ease; }
+    .pause-btn--paused { background: var(--color-red-400, #f87171); }
+    .pause-btn:hover { filter: brightness(0.9); }
 
     /* hours controls */
     .decrement-hours-btn, .increment-hours-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; border: 1px solid #e5e7eb; }
@@ -2722,17 +2877,26 @@
 
   const getTimerIcon = (running) => (running ? "stop" : "timer");
 
-  const getTimerLabel = (running, hasActualStart = false) => {
+  const getTimerLabel = (running, hasActualStart = false, paused = false) => {
     if (running) return "结束画画计时";
+    if (paused) return "继续委托并计时";
     return hasActualStart ? "开始画画计时" : "开始首次画画计时";
   };
 
   const getTimerButton = (task) => {
     if (!task || task.completed) return "";
     const running = isTimerRunning(task.id);
-    const notStarted = !running && !task.actualStartTime;
-    const stateClass = running ? "running" : notStarted ? "not-started" : "";
-    return `<div class="mt-3 flex justify-center"><button class="timer-btn ${stateClass} text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}"><span class="material-icons text-sm mr-2">${getTimerIcon(running)}</span><span class="text-sm font-medium">${getTimerLabel(running, !!task.actualStartTime)}</span></button></div>`;
+    const isPaused = !!task.paused;
+    const type = state.data?.taskTypes?.find((t) => t.id === task.type);
+    const typeColor = type ? type.color : "#6B7280";
+    const btnBg = computeButtonBgFromHex(typeColor);
+    const timerBtn = `<button class="timer-btn text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}" style="background:${btnBg}"><span class="material-icons text-sm mr-2">${getTimerIcon(running)}</span><span class="text-sm font-medium">${getTimerLabel(running, !!task.actualStartTime, isPaused)}</span></button>`;
+    if (task.abandoned) return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}</div>`;
+    const pauseIcon = isPaused ? "replay" : "play_disabled";
+    const pauseClass = isPaused ? "pause-btn--paused" : "";
+    const pauseBgStyle = isPaused ? "" : `background:${btnBg};`;
+    const pauseBtn = `<button class="pause-btn ${pauseClass}" data-task-id="${task.id}" data-testid="pause-btn-${task.id}" style="${pauseBgStyle}"><span class="material-icons-round text-sm">${pauseIcon}</span></button>`;
+    return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}${pauseBtn}</div>`;
   };
 
   const showTimerDurationDialog = (task, durationInHours, onClose) => {
@@ -2809,7 +2973,67 @@
     if (isTimerRunning(taskId)) {
       stopTimer(taskId);
     } else {
+      const task = state.tasks.find((t) => t.id === taskId);
+      // 如果任务处于暂停状态，点击计时按钮时同时恢复委托
+      if (task && task.paused) {
+        resumeTask(taskId);
+      }
       startTimer(taskId);
+    }
+  };
+
+  // ─── 暂停/恢复委托 ─────────────────────────────────────────
+  const pauseTask = (taskId) => {
+    const task = state.tasks.find((t) => t.id === taskId);
+    if (!task || task.completed || task.abandoned || task.paused) return;
+    if (isTimerRunning(taskId)) {
+      stopTimer(taskId);
+    }
+    task.paused = true;
+    task.pausedAt = new Date().toISOString();
+    if (!Array.isArray(task.pauseHistory)) task.pauseHistory = [];
+    task.pauseHistory.push({ pausedAt: task.pausedAt });
+    saveData().then(() => {
+      renderAll();
+      if (state.taskPreviewId === taskId) showTaskPreview(taskId);
+    });
+  };
+
+  const resumeTask = (taskId) => {
+    const task = state.tasks.find((t) => t.id === taskId);
+    if (!task || !task.paused) return;
+    const now = new Date();
+    const pausedAt = new Date(task.pausedAt);
+    const pausedMs = now.getTime() - pausedAt.getTime();
+    const pausedDays = pausedMs / (24 * 60 * 60 * 1000);
+    task.totalPausedDays = (task.totalPausedDays || 0) + pausedDays;
+    // 自动顺延 deadline
+    if (task.deadline) {
+      const dl = new Date(task.deadline);
+      if (!isNaN(dl.getTime())) {
+        dl.setTime(dl.getTime() + pausedMs);
+        task.deadline = formatDateTime(dl);
+      }
+    }
+    if (Array.isArray(task.pauseHistory) && task.pauseHistory.length > 0) {
+      const last = task.pauseHistory[task.pauseHistory.length - 1];
+      if (!last.resumedAt) last.resumedAt = now.toISOString();
+    }
+    task.paused = false;
+    task.pausedAt = null;
+    saveData().then(() => {
+      renderAll();
+      if (state.taskPreviewId === taskId) showTaskPreview(taskId);
+    });
+  };
+
+  const togglePause = (taskId) => {
+    const task = state.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (task.paused) {
+      resumeTask(taskId);
+    } else {
+      pauseTask(taskId);
     }
   };
 
@@ -2969,6 +3193,14 @@
       if (timerBtn) {
         const tid = parseInt(timerBtn.dataset.taskId, 10);
         if (tid) toggleTimer(tid);
+        return;
+      }
+
+      // Pause/resume button
+      const pauseBtn = target.closest(".pause-btn");
+      if (pauseBtn) {
+        const tid = parseInt(pauseBtn.dataset.taskId, 10);
+        if (tid) togglePause(tid);
         return;
       }
 
@@ -3696,6 +3928,39 @@
     return anyChanged;
   };
 
+  // ── 暂停实时预览：延伸暂停中任务的 deadline（供链式传播使用） ──
+  const applyPauseDeadlineExtension = async () => {
+    const today = toDateOnly(new Date());
+    if (!today) return;
+    let anyChanged = false;
+    (state.tasks || []).forEach(task => {
+      if (!task || !task.paused || !task.pausedAt) return;
+      const pausedAt = toDateOnly(task.pausedAt);
+      if (!pausedAt) return;
+      const pausedDays = daysBetween(pausedAt, today);
+      if (pausedDays < 1) return;
+      // 首次：保存原始 deadline 作为不随预览变化的基准
+      if (!task.pausePreDeadline && task.deadline) {
+        task.pausePreDeadline = task.deadline;
+      }
+      if (task.pausePreDeadline) {
+        const baseDeadline = new Date(task.pausePreDeadline);
+        if (!isNaN(baseDeadline.getTime())) {
+          const extended = new Date(baseDeadline);
+          extended.setDate(extended.getDate() + pausedDays);
+          const formatted = preserveTime(extended, task.pausePreDeadline);
+          if (task.deadline !== formatted) {
+            task.deadline = formatted;
+            anyChanged = true;
+            // 向下游传播延期
+            try { reflowChainFrom(String(task.id)); } catch (e) { /* ignore */ }
+          }
+        }
+      }
+    });
+    return anyChanged;
+  };
+
   const scanAllChainsOnLoad = async () => {
     if (state._scanningChains) return;
     state._scanningChains = true;
@@ -3722,9 +3987,7 @@
         const key = String(t.id);
         return before.has(key) && before.get(key) !== t.startTime + '|' + t.deadline;
       });
-      if (changed) {
-        try { await saveData(); } catch (e) { console.warn("scanAllChainsOnLoad saveData failed", e); }
-      }
+      return changed;
     } finally {
       state._scanningChains = false;
     }
@@ -3741,7 +4004,12 @@
     // 必须在 scanAllChainsOnLoad 之前初始化 modalController，否则 computeAutoDeadline 不可用
     // 导致回退路径使用 normalizeTask 膨胀后的 __endDate 产生错误的截止日期
     try { initModalController(); } catch (e) { console.warn("early initModalController failed", e); }
-    try { await scanAllChainsOnLoad(); } catch (e) { console.warn("scanAllChainsOnLoad failed on init", e); }
+    let _initNeedsSave = false;
+    try { const _sc = await scanAllChainsOnLoad(); if (_sc === true) _initNeedsSave = true; } catch (e) { console.warn("scanAllChainsOnLoad failed on init", e); }
+    // 暂停实时预览：在链式扫描之后延伸暂停中任务的 deadline，防止被 reflowChainFrom 覆盖
+    try { const _ap = await applyPauseDeadlineExtension(); if (_ap === true) _initNeedsSave = true; } catch (e) { console.warn("applyPauseDeadlineExtension failed", e); }
+    // 合并保存：无论哪个阶段有变更，只在此处保存一次，避免多次写盘
+    if (_initNeedsSave) { try { await saveData(); } catch (e) { console.warn("init saveData failed", e); } }
     // 每次加载重置快照历史；base.tasks 仅存内存，preview.json 不产生双倍开销
     resetPreviewBaseFromIndex();
     renderAll();

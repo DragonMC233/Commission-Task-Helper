@@ -1473,25 +1473,41 @@ input[type="number"] {
 
 /* 任务卡片底部的计时按钮 */
 .timer-btn {
-  background: #ffa23f;
   color: white;
   padding: 0.5rem 1rem;
   border-radius: 9999px;
   transition: background 0.2s ease, filter 0.2s ease;
 }
 
-.timer-btn.running {
-  background: #ef4444;
-}
-
-/* 未开始（未记录实际开始时间）：绿底白字 */
-.timer-btn.not-started {
-  background: #a3e635;
-  color: #ffffff;
-}
-
 .timer-btn:hover {
   filter: brightness(0.95);
+}
+
+/* 暂停/恢复委托按钮 */
+.pause-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  transition: background 0.2s ease, filter 0.2s ease;
+}
+
+.pause-btn--paused {
+  background: var(--color-red-400) !important;
+}
+
+.pause-btn:hover {
+  filter: brightness(0.9);
+}
+
+.daily-time-badge[data-variant="paused"] {
+  background: var(--color-red-400);
+  color: #fff;
 }
 
 /* 任务卡片外部的时长调节箭头 */
