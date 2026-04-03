@@ -247,8 +247,9 @@
     if (task.paused && task.pausedAt) {
       const today2 = toDateOnly(new Date());
       const pD2   = toDateOnly(task.pausedAt);
-      if (today2 && pD2 && today2 > pD2) {
-        const extraDays = daysBetween(pD2, today2);
+      const pD2next = pD2 ? addDays(pD2, 1) : null; // 暂停日当天算工作日，次日才开始 gap
+      if (today2 && pD2next && today2 > pD2next) {
+        const extraDays = daysBetween(pD2next, today2);
         const extended  = new Date(safeEnd);
         extended.setDate(extended.getDate() + extraDays);
         safeEnd = extended;
@@ -761,38 +762,13 @@
       cur = pred;
     }
 
-    // 根据 actualStartTime 定位分支锚点
-    // urgentA 永远为分支，主链排期保持不变
-    // 找 Q = 最后一个 startTime <= actualStart 的前序
-    //   无 Q              → 独立任务（lineTaskId = null）
-    //   gap <= 7天（含重叠）→ 分支自 Q（同档并行/紧随）
-    //   gap > 7天          → 往前一级（避免分支悬空过长）
-    const BRANCH_GAP_DAYS = 7;
-    let newLineTaskId = null;
-    if (task.actualStartTime) {
-      const actualStart = new Date(task.actualStartTime).getTime();
-      let qIdx = -1;
-      for (let i = orderedPreds.length - 1; i >= 0; i--) {
-        if (new Date(orderedPreds[i].startTime).getTime() <= actualStart) {
-          qIdx = i;
-          break;
-        }
-      }
-      if (qIdx !== -1) {
-        const Q = orderedPreds[qIdx];
-        const gapDays = (actualStart - new Date(Q.deadline).getTime()) / 86400000;
-        if (gapDays <= BRANCH_GAP_DAYS) {
-          newLineTaskId = Q.id;
-        } else {
-          newLineTaskId = qIdx > 0 ? orderedPreds[qIdx - 1].id : null;
-        }
-      }
-      // qIdx === -1: actualStart 早于所有前序 → 独立任务
-    }
+    // urgentA 永远为分支，直接绑定到链根，使主链结构清晰
+    // orderedPreds[0] 即链头（根任务），无前序则变为独立任务
+    const newLineTaskId = orderedPreds.length > 0 ? orderedPreds[0].id : null;
 
     const message = `任务"${task.name}"已实际开始，早于链式计算的开始时间。是否确认加急并调整链顺序？`;
     const dialogEl = document.createElement('div');
-    dialogEl.className = 'fixed inset-0 z-50 flex items-center justify-center p-4';
+    dialogEl.className = 'fixed inset-0 z-[60] flex items-center justify-center p-4';
     dialogEl.style.backgroundColor = 'rgba(0,0,0,0.5)';
     dialogEl.innerHTML = `
       <div class="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
@@ -807,6 +783,12 @@
       dialogEl.parentNode && document.body.removeChild(dialogEl)
     );
     dialogEl.querySelector('.confirm-ok').addEventListener('click', () => {
+      // 先将 C 的后继（D）回接到 C 的原前序（B），保证主链不断裂
+      const originalLineTaskId = task.lineTaskId;
+      const successors = (state.tasks || []).filter(
+        (t) => t && t.dependencyType === 'line' && String(t.lineTaskId) === String(task.id)
+      );
+      successors.forEach((s) => { s.lineTaskId = originalLineTaskId; });
       task.urgentA = true;
       task.lineTaskId = newLineTaskId;
       task.dependencyType = newLineTaskId ? 'line' : 'none';
@@ -823,10 +805,13 @@
           Object.assign(task, { __startDate: norm.__startDate, __endDate: norm.__endDate, __duration: norm.__duration });
         }
       }
+      // 从原前序（B）出发重新排期，更新回接过来的后继任务（D）的开始时间
+      if (originalLineTaskId) {
+        reflowChainFrom(originalLineTaskId);
+      }
       dialogEl.parentNode && document.body.removeChild(dialogEl);
       saveData();
-      renderBars();
-      renderLinks();
+      renderAll();
     });
     dialogEl.addEventListener('click', (e) => {
       if (e.target === dialogEl) dialogEl.parentNode && document.body.removeChild(dialogEl);
@@ -949,8 +934,18 @@
     const barHeight = state.barHeight;
     const layout = new Map();
     els.bars.innerHTML = "";
+    // 预计算每个"被某任务作为 lineTaskId 的父任务"集合，用于判断链尾
+    const chainParentIds = new Set(state.tasks.filter(t => t.lineTaskId).map(t => String(t.lineTaskId)));
 
-    state.tasks.forEach((task) => {
+    // 按开始日期升序渲染：旧任务先入 DOM（在底），新任务后入 DOM（天然叠在顶部）
+    // 无需 z-index，完全依赖 CSS 天然叠层规则，避免任务量过多时 z-index 溢出
+    const renderOrder = [...state.tasks].sort((a, b) => {
+      const ta = a.__startDate ? a.__startDate.getTime() : 0;
+      const tb = b.__startDate ? b.__startDate.getTime() : 0;
+      return ta - tb;
+    });
+
+    renderOrder.forEach((task) => {
       const row = state.rows.get(String(task.id)) || 0;
       const left = daysBetween(start, task.__startDate) * dayWidth;
       const width = task.__duration * dayWidth;
@@ -1106,6 +1101,9 @@
         }
       }
 
+      // appendRight：按钮/连接线的起始锚点，默认为任务整体右边缘
+      let appendRight = left + width;
+
       if (crossDayPauseEntries.length === 0) {
         // 无跨天暂停：直接追加原 bar
         els.bars.appendChild(bar);
@@ -1119,7 +1117,7 @@
         for (const entry of sortedPauses) {
           const pDate      = toDateOnly(entry.pausedAt);
           const rDate      = toDateOnly(entry.resumedAt);
-          const gapStartPx = daysBetween(task.__startDate, pDate) * dayWidth;
+          const gapStartPx = daysBetween(task.__startDate, addDays(pDate, 1)) * dayWidth; // 暂停日当天算工作日，次日才开始 gap
           const gapEndPx   = daysBetween(task.__startDate, rDate) * dayWidth;
           if (gapStartPx > curPx) {
             segs.push({ relLeftPx: curPx, widthPx: gapStartPx - curPx });
@@ -1195,6 +1193,18 @@
             els.bars.appendChild(segBar);
           });
 
+          // 更新 appendRight：确保按钮始终在末端圆点右侧
+          // end-dot: right=8px, width=12px → 分段需至少 barHeight+dotRight+dotSize=55px 才不会视觉偏移
+          // 用 max 把补偿合并进去：宽分段 → appendRight=segRight（无额外偏移）；窄分段 → appendRight=segLeft+55
+          {
+            const lastSeg      = segs[segs.length - 1];
+            const lastSegLeft  = left + lastSeg.relLeftPx;
+            const lastSegRight = lastSegLeft + lastSeg.widthPx;
+            const dotRight     = 8;   // bar-dot.end: right: 0.5rem
+            const dotSize      = 12;  // bar-dot: width: 0.75rem
+            appendRight = Math.max(lastSegRight, lastSegLeft + barHeight + dotRight + dotSize);
+          }
+
           // 虚线桥接线（连接相邻片段）
           for (let i = 0; i < segs.length - 1; i++) {
             const s1 = segs[i];
@@ -1217,6 +1227,67 @@
             els.bars.appendChild(bridge);
           }
         }
+      }
+
+      // ── 链式追加按钮：在链尾任务右侧显示一个无圆点的圆形 + 按钮 ──
+      if (task.dependencyType === 'line' && !chainParentIds.has(String(task.id))) {
+        const appendGap = 14; // 宽一些的间距，容纳虚线连接线
+        const appendNodeColor = getNearestTailwindTextHex(baseColor) || '#0f172a';
+        // 虚线连接线：从 bar 右端延伸到 + 按钮左端（用 appendRight 保证暂停任务不重叠）
+        const appendConnector = document.createElement('div');
+        appendConnector.className = 'gantt-chain-append-connector';
+        appendConnector.style.cssText = [
+          'position:absolute',
+          `left:${appendRight}px`,
+          `top:${top + barHeight / 2 - 1}px`,
+          `width:${appendGap}px`,
+          'height:0',
+          `border-top:2px dashed ${effectiveRing}`,
+          'opacity:0.75',
+          'pointer-events:none',
+          'transition:opacity 0.18s',
+        ].join(';') + ';';
+        els.bars.appendChild(appendConnector);
+        // + 圆形按钮
+        const appendBtn = document.createElement('div');
+        appendBtn.className = 'gantt-chain-append-btn';
+        appendBtn.dataset.predecessorId = String(task.id);
+        appendBtn.title = `在"${task.name || '未命名'}"后追加任务`;
+        appendBtn.style.cssText = [
+          'position:absolute',
+          `left:${appendRight + appendGap}px`,
+          `top:${top}px`,
+          `width:${barHeight}px`,
+          `height:${barHeight}px`,
+          'border-radius:9999px',
+          `border:2px dashed ${effectiveRing}`,
+          `background:${effectiveBarBg}`,
+          'display:flex',
+          'align-items:center',
+          'justify-content:center',
+          'cursor:pointer',
+          'opacity:0.95',
+          'transition:opacity 0.18s,transform 0.18s',
+          'box-sizing:border-box',
+          'user-select:none',
+        ].join(';') + ';';
+        appendBtn.innerHTML = `<span style="font-size:18px;font-weight:700;color:${appendNodeColor};line-height:1;pointer-events:none;">+</span>`;
+        appendBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+        appendBtn.addEventListener('mouseenter', () => {
+          appendBtn.style.opacity = '1';
+          appendBtn.style.transform = 'scale(1.1)';
+          appendConnector.style.opacity = '1';
+        });
+        appendBtn.addEventListener('mouseleave', () => {
+          appendBtn.style.opacity = '0.95';
+          appendBtn.style.transform = '';
+          appendConnector.style.opacity = '0.75';
+        });
+        appendBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openModalForChainAppend(task.id);
+        });
+        els.bars.appendChild(appendBtn);
       }
     });
 
@@ -1376,7 +1447,7 @@
         const origRow = state.rows.get(id) || 0;
         const origTop = origRow * state.rowHeight + (state.rowHeight - barHeight) / 2;
         barEl.style.top = `${origTop + deltaY}px`;
-        barEl.style.zIndex = '100';
+        barEl.style.zIndex = '9999';
       }
 
       // Update layout cache so link redraws use the latest position
@@ -2595,12 +2666,26 @@
              if (qsNameEl) qsNameEl.value = '';
            } catch (e) { console.warn('quick-add source failed', e); }
 
-           const norm = normalizeTask({ ...taskData, type: resolvedType, source: resolvedSource });
+           const resolvedFormData = { ...taskData, type: resolvedType, source: resolvedSource };
            const oldTask = editingId ? state.tasks.find(t => t.id === editingId) : null;
+           let norm;
            if (editingId) {
              const idx = state.tasks.findIndex(t => t.id === editingId);
-             if (idx >= 0) state.tasks[idx] = norm;
+             if (idx >= 0) {
+               // 参考 MainView 方案：原地更新表单字段，不替换整个对象
+               // 这样可以保留不在表单里的字段（pauseHistory/paused/pausedAt/totalPausedDays/pausePreDeadline 等）
+               Object.assign(state.tasks[idx], resolvedFormData);
+               // 重新计算 normalizeTask 的计算字段（__startDate/__endDate/__duration）
+               const reNorm = normalizeTask(state.tasks[idx]);
+               state.tasks[idx].__startDate = reNorm.__startDate;
+               state.tasks[idx].__endDate   = reNorm.__endDate;
+               state.tasks[idx].__duration  = reNorm.__duration;
+               norm = state.tasks[idx];
+             } else {
+               norm = normalizeTask(resolvedFormData);
+             }
            } else {
+             norm = normalizeTask(resolvedFormData);
              state.tasks.push(norm);
            }
 
@@ -2645,6 +2730,26 @@
   const showModal = (taskId) => {
       if (!modalController) initModalController();
       modalController.showModal(taskId);
+  };
+
+  // 在链尾任务后追加新任务（打开表单并预填链式依赖）
+  const openModalForChainAppend = (predecessorId) => {
+    if (!modalController) initModalController();
+    // 打开空白新任务表单
+    modalController.showModal(null);
+    // 预选「链式」依赖模式
+    const lineRadio = document.querySelector('input[name="task-dependency"][value="line"]');
+    if (lineRadio) lineRadio.checked = true;
+    // 默认启用自动计算开始时间（最常用的链式场景）
+    const autoScheduleEl = document.getElementById('task-auto-schedule');
+    if (autoScheduleEl) autoScheduleEl.checked = true;
+    // 渲染前序任务下拉并选中 predecessorId
+    modalController.renderLineTaskOptions(predecessorId, null);
+    const selectLine = document.getElementById('task-line-task');
+    if (selectLine) selectLine.value = String(predecessorId);
+    // 显示链式依赖 UI 并触发自动开始时间计算
+    modalController.updateDependencyUI('line');
+    try { modalController.updateDeadlineSuggestion?.(); } catch (e) { /* ignore */ }
   };
 
   // 显示设置弹窗

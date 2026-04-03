@@ -1110,12 +1110,15 @@ class TaskManager {
     if (!hoursValid || !requireDays || !dailyHours) return null;
     const sourceTaskId =
       sample.sourceTaskId || sample.source_task_id || sample.sourceTask || null;
+    const sourceTaskName =
+      sample.sourceTaskName || sample.source_task_name || sample.name || null;
     return {
       hours,
       requireDays,
       dailyHours,
       completedAt: end.toISOString(),
       sourceTaskId: sourceTaskId === undefined ? null : sourceTaskId,
+      sourceTaskName: sourceTaskName === undefined ? null : sourceTaskName,
     };
   }
   // 计算统计样本的加权平均值
@@ -1170,6 +1173,7 @@ class TaskManager {
         .slice(0, this.statisticsMaxSamples);
       const agg = this.computeStatisticsAggregates(normalizedSamples);
       stats.types[typeId] = {
+        ...(entry.typeName !== undefined ? { typeName: entry.typeName } : {}),
         samples: normalizedSamples,
         avgDailyHours: Number.isFinite(entry.avgDailyHours)
           ? entry.avgDailyHours
@@ -1190,6 +1194,11 @@ class TaskManager {
   isStatisticsEmpty(stats) {
     return !stats || !stats.types || Object.keys(stats.types).length === 0;
   }
+  _getTypeName(typeId) {
+    if (!typeId) return undefined;
+    const found = (this.taskTypes || []).find((t) => String(t.id) === String(typeId) || t.id === typeId);
+    return found ? found.name : undefined;
+  }
   upsertStatisticsSample(taskType, sample) {
     if (!taskType || !sample) return null;
     if (!this.statistics || typeof this.statistics !== "object") {
@@ -1203,8 +1212,22 @@ class TaskManager {
     if (srcId !== null && srcId !== undefined) {
       const idx = samples.findIndex((s) => s && (s.sourceTaskId || s.source_task_id || s.sourceTask) == srcId);
       if (idx >= 0) {
+        // 保留已有样本中的名称，若新样本没有提供
+        if (!sample.sourceTaskName) {
+          sample.sourceTaskName = samples[idx]?.sourceTaskName || samples[idx]?.source_task_name || samples[idx]?.name || null;
+        }
+        // 若仍无名称，尝试从当前 tasks 列表查找
+        if (!sample.sourceTaskName) {
+          const foundTask = (this.tasks || []).find((t) => String(t.id) === String(srcId));
+          if (foundTask && foundTask.name) sample.sourceTaskName = foundTask.name;
+        }
         samples[idx] = sample;
       } else {
+        // 若新样本没有名称，尝试从当前 tasks 列表查找并填充
+        if (!sample.sourceTaskName) {
+          const foundTask = (this.tasks || []).find((t) => String(t.id) === String(srcId));
+          if (foundTask && foundTask.name) sample.sourceTaskName = foundTask.name;
+        }
         samples.push(sample);
       }
     } else {
@@ -1214,7 +1237,9 @@ class TaskManager {
     samples.sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
     const trimmed = samples.slice(0, this.statisticsMaxSamples);
     const agg = this.computeStatisticsAggregates(trimmed);
+    const typeName = this._getTypeName(taskType);
     types[taskType] = {
+      ...(typeName !== undefined ? { typeName } : {}),
       samples: trimmed,
       avgDailyHours: agg.avgDailyHours,
       avgRequireDays: agg.avgRequireDays,
@@ -1257,11 +1282,12 @@ class TaskManager {
     if (!endRaw) return null;
     const end = new Date(endRaw);
     if (Number.isNaN(end.getTime())) return null;
+    // 优先使用 startTime（委托接受日），避免 actualStartTime 导致暂停天数被重复扣除
     const startRaw =
-      task.actualStartTime ||
       task.startTime ||
       task.starttime ||
       task.startDate ||
+      task.actualStartTime ||
       task.deadline;
     if (!startRaw) return null;
     const start = new Date(startRaw);
@@ -1279,10 +1305,18 @@ class TaskManager {
       }
     }
     if (!hours) return null;
-    const requireDays = Math.max(
-      1,
-      Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
-    );
+    // 从 pauseHistory 动态计算已完成的暂停总时长（避免依赖可能过时的 totalPausedDays）
+    const pauseHistory = Array.isArray(task.pauseHistory) ? task.pauseHistory : [];
+    const pausedMs = pauseHistory.reduce((sum, entry) => {
+      if (!entry || !entry.pausedAt || !entry.resumedAt) return sum;
+      const ps = new Date(entry.pausedAt).getTime();
+      const pe = new Date(entry.resumedAt).getTime();
+      const diff = pe - ps;
+      return sum + (diff > 0 ? diff : 0);
+    }, 0);
+    const pausedDays = pausedMs / (1000 * 60 * 60 * 24);
+    const calendarDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
+    const requireDays = Math.max(1, Math.ceil(calendarDays - pausedDays));
     const dailyHours = hours / requireDays;
     return {
       hours,
@@ -1290,6 +1324,7 @@ class TaskManager {
       dailyHours,
       completedAt: end.toISOString(),
       sourceTaskId: task.id,
+      sourceTaskName: task.name || task.title || null,
     };
   }
   rebuildStatisticsFromTasks(tasks) {
@@ -1309,7 +1344,9 @@ class TaskManager {
         .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
         .slice(0, this.statisticsMaxSamples);
       const agg = this.computeStatisticsAggregates(entry.samples);
+      const typeName = this._getTypeName(typeId);
       stats.types[typeId] = {
+        ...(typeName !== undefined ? { typeName } : {}),
         samples: entry.samples,
         avgDailyHours: agg.avgDailyHours,
         avgRequireDays: agg.avgRequireDays,
@@ -1467,38 +1504,16 @@ class TaskManager {
     // 构建有序前序链 [链头, ..., 紧前任务]（getChainAncestors 返回 [紧前,...,链头]，需 reverse）
     const orderedPreds = [...this.getChainAncestors(task)].reverse();
 
-    // 根据 actualStartTime 定位分支锚点
-    // urgentA 永远为分支，主链排期保持不变
-    // 找 Q = 最后一个 startTime <= actualStart 的前序
-    //   无 Q              → 独立任务（lineTaskId = null）
-    //   gap <= 7天（含重叠）→ 分支自 Q（同档并行/紧随）
-    //   gap > 7天          → 往前一级（避免分支悬空过长）
-    const BRANCH_GAP_DAYS = 7;
-    let newLineTaskId = null;
-    if (task.actualStartTime) {
-      const actualStart = new Date(task.actualStartTime).getTime();
-      let qIdx = -1;
-      for (let i = orderedPreds.length - 1; i >= 0; i--) {
-        if (new Date(orderedPreds[i].startTime).getTime() <= actualStart) {
-          qIdx = i;
-          break;
-        }
-      }
-      if (qIdx !== -1) {
-        const Q = orderedPreds[qIdx];
-        const gapDays = (actualStart - new Date(Q.deadline).getTime()) / 86400000;
-        if (gapDays <= BRANCH_GAP_DAYS) {
-          newLineTaskId = Q.id;
-        } else {
-          newLineTaskId = qIdx > 0 ? orderedPreds[qIdx - 1].id : null;
-        }
-      }
-      // qIdx === -1: actualStart 早于所有前序 → 独立任务
-    }
+    // urgentA 永远为分支，直接绑定到链根，使主链结构清晰
+    // orderedPreds[0] 即链头（根任务），无前序则变为独立任务
+    const newLineTaskId = orderedPreds.length > 0 ? orderedPreds[0].id : null;
 
     const message =
       `任务"${task.name}"已实际开始，早于链式计算的开始时间。是否确认加急并调整链顺序？`;
     this.showConfirmDialog(message, () => {
+      // 先将 C 的后继（D）回接到 C 的原前序（B），保证主链不断裂
+      const originalLineTaskId = task.lineTaskId;
+      this.rebindSuccessorsTo(task.id, originalLineTaskId);
       task.urgentA = true;  // 标记为「实际开始加急」，BarView 将以 actualStartTime 为 bar 起点
       task.lineTaskId = newLineTaskId;
       task.dependencyType = newLineTaskId ? "line" : "none";
@@ -1526,6 +1541,11 @@ class TaskManager {
           task.type
         );
         if (autoEnd) task.deadline = autoEnd;
+      }
+      // 从原前序（B）出发重新排期，更新回接过来的后继任务（D）的开始时间
+      if (originalLineTaskId) {
+        const parentTask = (this.tasks || []).find((t) => t.id === originalLineTaskId);
+        if (parentTask) this.adjustChainFrom(parentTask);
       }
       this.saveAllData();
       this.renderTasks(task.id);
@@ -6089,6 +6109,17 @@ class TaskManager {
 
 
             </section>
+
+            <!-- 一级：数据维护 -->
+            <section class="mb-4">
+              <h3 class="text-lg font-semibold text-stone-800 mb-3">数据维护</h3>
+              <div class="mb-3">
+                <div class="text-sm text-stone-700 mb-1">从任务数据重建统计</div>
+                <div class="text-xs text-stone-500 mb-2">手动编辑本地 index.json（如修改暂停历史）后，Statistics.json 的历史记录可能不同步。点此从当前已完成任务重新计算并立即保存统计数据。</div>
+                <button id="rebuild-statistics-btn" class="px-4 py-2 text-sm border border-stone-300 text-stone-700 rounded-lg hover:bg-stone-50">重建统计</button>
+                <span id="rebuild-statistics-status" class="ml-3 text-xs text-stone-500"></span>
+              </div>
+            </section>
           </div>
           <div class="modal-footer !m-0 !p-6 pt-0">
             <div class="flex gap-3">
@@ -6379,6 +6410,26 @@ class TaskManager {
       const m = document.getElementById("page-settings-modal");
       if (m) m.remove();
     };
+
+    const rebuildStatsBtn = document.getElementById("rebuild-statistics-btn");
+    if (rebuildStatsBtn) {
+      rebuildStatsBtn.addEventListener("click", async () => {
+        const statusEl = document.getElementById("rebuild-statistics-status");
+        try {
+          rebuildStatsBtn.disabled = true;
+          if (statusEl) statusEl.textContent = "重建中…";
+          this.statistics = this.rebuildStatisticsFromTasks(this.tasks);
+          await this.saveAllData();
+          if (statusEl) statusEl.textContent = "✓ 已重建并保存";
+          setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 3000);
+        } catch (e) {
+          if (statusEl) statusEl.textContent = "重建失败";
+          console.error("重建统计失败", e);
+        } finally {
+          rebuildStatsBtn.disabled = false;
+        }
+      });
+    }
 
     document
       .getElementById("close-page-settings-btn")
@@ -7327,6 +7378,7 @@ class TaskManager {
         let cur = new Date(startDateParsed);
         for (const entry of sorted) {
           const pD = new Date(entry.pausedAt); pD.setHours(0, 0, 0, 0);
+          pD.setDate(pD.getDate() + 1); // 暂停日当天算工作日，次日才开始 gap
           const rD = new Date(entry.resumedAt); rD.setHours(0, 0, 0, 0);
           if (rD <= cur) continue;
           if (pD > cur) ranges.push({ start: new Date(cur), end: new Date(pD) });

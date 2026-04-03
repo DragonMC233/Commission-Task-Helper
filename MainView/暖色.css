@@ -2055,7 +2055,7 @@ input[type="number"] {
   align-items: center;
   justify-content: center;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 9999;
+  z-index: 50;
   padding: 20px;
   -webkit-overflow-scrolling: touch;
 }
@@ -2071,7 +2071,7 @@ input[type="number"] {
   background: transparent;
   width: 100%;
   margin: 0 auto;
-  z-index: 10000;
+  z-index: 50;
 }
 
 /* 预览卡片规则 */
