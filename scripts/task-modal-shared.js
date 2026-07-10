@@ -31,6 +31,8 @@ class TaskModalController {
         this.editingTaskId = null;
         this.tempNodes = [];
         this.tempPaymentRecords = [];
+        this.tempPauseHistory = [];
+        this.editingPauseId = null; // 非 null 表示正在编辑某条暂停记录
         this.currentImageData = null;
         this.imageChanged = false;
 
@@ -192,6 +194,9 @@ class TaskModalController {
         if (addPaymentBtn) addPaymentBtn.addEventListener("click", () => this.addPaymentRecord("payment"));
         const addRefundBtn = document.getElementById("add-refund-btn");
         if (addRefundBtn) addRefundBtn.addEventListener("click", () => this.addPaymentRecord("refund"));
+        // 暂停记录按钮
+        const addPauseBtn = document.getElementById("add-pause-record-btn");
+        if (addPauseBtn) addPauseBtn.addEventListener("click", () => this.savePauseRecord());
         // 废弃复选框 → 显示/隐藏废弃时间输入
         const abandonedCheckbox = document.getElementById("task-abandoned");
         const abandonedAtRow = document.getElementById("abandoned-at-row");
@@ -281,10 +286,15 @@ class TaskModalController {
             // 收款方式
             const paymentModeEl = document.getElementById("task-payment-mode");
             if (paymentModeEl) paymentModeEl.value = task.paymentMode || "";
-            // 收款记录
+            // 收支记录
             this.tempPaymentRecords = Array.isArray(task.paymentRecords)
               ? JSON.parse(JSON.stringify(task.paymentRecords)) : [];
             this.renderPaymentRecords();
+            // 暂停历史
+            this.tempPauseHistory = Array.isArray(task.pauseHistory)
+              ? JSON.parse(JSON.stringify(task.pauseHistory)) : [];
+            this.editingPauseId = null;
+            this.renderPauseHistory();
             // 废弃状态
             const abandonedEl = document.getElementById("task-abandoned");
             if (abandonedEl) abandonedEl.checked = !!task.abandoned;
@@ -356,11 +366,14 @@ class TaskModalController {
             if (estDaysElNew) estDaysElNew.value = "";
             document.getElementById("task-actual-hours").value = "0";
             document.getElementById("task-payment").value = "";
-            // 收款方式、收款记录、废弃状态重置
+            // 收款方式、收支记录、废弃状态重置
             const paymentModeElNew = document.getElementById("task-payment-mode");
             if (paymentModeElNew) paymentModeElNew.value = "";
             this.tempPaymentRecords = [];
             this.renderPaymentRecords();
+            this.tempPauseHistory = [];
+            this.editingPauseId = null;
+            this.renderPauseHistory();
             const abandonedElNew = document.getElementById("task-abandoned");
             if (abandonedElNew) abandonedElNew.checked = false;
             const abandonedAtRowNew = document.getElementById("abandoned-at-row");
@@ -530,6 +543,14 @@ class TaskModalController {
         const payment = paymentInput ? parseFloat(paymentInput) : 0;
         const paymentMode = getVal("task-payment-mode") || null;
         const paymentRecords = [...(this.tempPaymentRecords || [])];
+        const pauseHistory = [...(this.tempPauseHistory || [])];
+        const totalPausedDays = pauseHistory.reduce((sum, r) => {
+            const s = new Date(r.pausedAt), e = new Date(r.resumedAt);
+            if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
+                return sum + (e - s) / 86400000;
+            }
+            return sum;
+        }, 0);
         const abandoned = getBool("task-abandoned");
         const existingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
         const abandonedAtInputVal = document.getElementById("task-abandoned-at")?.value;
@@ -564,6 +585,8 @@ class TaskModalController {
             payment,
             paymentMode: paymentMode || null,
             paymentRecords,
+            pauseHistory,
+            totalPausedDays,
             abandoned,
             abandonedAt,
             actualHours,
@@ -1199,15 +1222,15 @@ class TaskModalController {
         }
 
         // 计算并显示历史平均缓冲天数
-        const bufSuggEl = document.getElementById("task-buffer-suggestion");
-        if (bufSuggEl) {
-            const bufStats = this.computeTypeAvgBufferDays(type);
-            if (bufStats && Number.isFinite(bufStats.avgBufferDays) && bufStats.sampleCount >= MIN_SAMPLES_FOR_SUGGESTION) {
-                bufSuggEl.textContent = `历史平均休息 ${Math.max(0, Math.round(bufStats.avgBufferDays))} 天`;
-            } else {
-                bufSuggEl.textContent = `历史平均休息 x 天`;
-            }
-        }
+        //const bufSuggEl = document.getElementById("task-buffer-suggestion");
+        //if (bufSuggEl) {
+        //    const bufStats = this.computeTypeAvgBufferDays(type);
+        //    if (bufStats && Number.isFinite(bufStats.avgBufferDays) && bufStats.sampleCount >= MIN_SAMPLES_FOR_SUGGESTION) {
+        //        bufSuggEl.textContent = `历史平均休息 ${Math.max(0, Math.round(bufStats.avgBufferDays))} 天`;
+        //    } else {
+        //        bufSuggEl.textContent = `历史平均休息 x 天`;
+            //}
+        //}
 
         // 如果启用了统计数据计算截止且建议可用，则填回截止输入框并同步工期
         // urgentA 任务：截止日期基于实际开始时间计算；普通任务：基于计划开始时间
@@ -1415,7 +1438,7 @@ class TaskModalController {
     }
 
     // ═══════════════════════════════════════
-    // 收款记录管理 (paymentRecords)
+    // 收支记录管理 (paymentRecords)
     // ═══════════════════════════════════════
     renderPaymentRecords() {
         const list = document.getElementById("payment-records-list");
@@ -1492,6 +1515,121 @@ class TaskModalController {
             this.renderPaymentRecords();
             cleanup();
         };
+    }
+
+    // ═══════════════════════════════════════
+    // 暂停历史记录管理 (pauseHistory)
+    // ═══════════════════════════════════════
+    renderPauseHistory() {
+        const list = document.getElementById("pause-history-list");
+        const empty = document.getElementById("pause-history-empty");
+        if (!list) return;
+        const records = this.tempPauseHistory || [];
+        if (records.length === 0) {
+            list.innerHTML = "";
+            if (empty) empty.style.display = "";
+            return;
+        }
+        if (empty) empty.style.display = "none";
+        const fmt = (v) => {
+            if (!v) return "";
+            const d = new Date(v);
+            return isNaN(d.getTime()) ? "" :
+                `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+        };
+        list.innerHTML = records.map((r, i) => {
+            return `<div class="flex items-center justify-between px-2 py-1 rounded border border-amber-100 bg-amber-50 text-xs gap-2">
+              <span class="text-stone-600 flex-1 truncate">${fmt(r.pausedAt)}</span>
+              <span class="text-stone-400">—</span>
+              <span class="text-stone-600 flex-1 truncate">${fmt(r.resumedAt)}</span>
+              <button type="button" data-edit-pause-id="${i}" class="text-stone-400 hover:text-amber-600 shrink-0" title="编辑">
+                <span class="material-icons" style="font-size:14px;vertical-align:-3px;">edit</span>
+              </button>
+              <button type="button" data-remove-pause-id="${i}" class="text-stone-400 hover:text-red-500 shrink-0" title="删除">
+                <span class="material-icons" style="font-size:14px;vertical-align:-3px;">close</span>
+              </button>
+            </div>`;
+        }).join("");
+        // 绑定删除事件
+        list.querySelectorAll("[data-remove-pause-id]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const idx = Number(btn.dataset.removePauseId);
+                this.tempPauseHistory = (this.tempPauseHistory || []).filter((_, i) => i !== idx);
+                if (this.editingPauseId === idx) this.clearPauseInputs();
+                else if (this.editingPauseId !== null && this.editingPauseId > idx) this.editingPauseId--;
+                this.renderPauseHistory();
+            });
+        });
+        // 绑定编辑事件
+        list.querySelectorAll("[data-edit-pause-id]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const idx = Number(btn.dataset.editPauseId);
+                const r = (this.tempPauseHistory || [])[idx];
+                if (!r) return;
+                const sEl = document.getElementById("pause-start-input");
+                const eEl = document.getElementById("pause-end-input");
+                if (sEl) sEl.value = this.formatDateTimeLocal(r.pausedAt);
+                if (eEl) eEl.value = this.formatDateTimeLocal(r.resumedAt);
+                this.editingPauseId = idx;
+                this.updatePauseActionButton();
+            });
+        });
+    }
+
+    clearPauseInputs() {
+        const sEl = document.getElementById("pause-start-input");
+        const eEl = document.getElementById("pause-end-input");
+        const errEl = document.getElementById("pause-record-error");
+        if (sEl) sEl.value = "";
+        if (eEl) eEl.value = "";
+        if (errEl) errEl.classList.add("hidden");
+        this.editingPauseId = null;
+        this.updatePauseActionButton();
+    }
+
+    updatePauseActionButton() {
+        const btn = document.getElementById("add-pause-record-btn");
+        if (!btn) return;
+        const icon = btn.querySelector(".material-icons");
+        if (this.editingPauseId !== null) {
+            if (icon) icon.textContent = "check";
+            btn.className = "shrink-0 p-2 rounded-lg bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors flex items-center justify-center";
+            btn.title = "更新暂停记录";
+        } else {
+            if (icon) icon.textContent = "add";
+            btn.className = "shrink-0 p-2 rounded-lg bg-green-50 text-green-700 hover:bg-green-100 transition-colors flex items-center justify-center";
+            btn.title = "添加暂停记录";
+        }
+    }
+
+    savePauseRecord() {
+        const sEl = document.getElementById("pause-start-input");
+        const eEl = document.getElementById("pause-end-input");
+        const errEl = document.getElementById("pause-record-error");
+        const pausedAt = sEl?.value || "";
+        const resumedAt = eEl?.value || "";
+        if (!pausedAt || !resumedAt) {
+            if (errEl) errEl.classList.remove("hidden");
+            return;
+        }
+        // 验证：结束时间必须晚于开始时间
+        if (new Date(resumedAt) <= new Date(pausedAt)) {
+            if (errEl) { errEl.textContent = "暂停结束时间必须晚于暂停开始时间"; errEl.classList.remove("hidden"); }
+            return;
+        }
+        if (errEl) errEl.classList.add("hidden");
+        const record = {
+            pausedAt: new Date(pausedAt).toISOString(),
+            resumedAt: new Date(resumedAt).toISOString(),
+        };
+        if (!this.tempPauseHistory) this.tempPauseHistory = [];
+        if (this.editingPauseId !== null) {
+            this.tempPauseHistory[this.editingPauseId] = record;
+        } else {
+            this.tempPauseHistory.push(record);
+        }
+        this.clearPauseInputs();
+        this.renderPauseHistory();
     }
 
     // ═══════════════════════════════════════
@@ -1777,24 +1915,24 @@ class TaskModalController {
       <h2 id="modal-title" class="text-xl font-bold text-stone-800 mb-4">添加新任务</h2>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">任务名称</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">任务名称</label>
         <input type="text" id="task-name"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
           placeholder="输入任务名称" data-testid="task-name-input" data-scrapbook-input-value="">
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">任务类型</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">任务类型</label>
         <div class="space-y-2" id="task-type-options"><!-- populated dynamically --></div>
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">来源平台</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">来源平台</label>
         <div class="space-y-2" id="task-source-options"><!-- populated dynamically --></div>
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">排单模式</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">排单模式</label>
         <div id="task-dependency-options" class="grid grid-cols-2 gap-2">
           <label class="flex items-center p-2 border border-stone-300 rounded-lg cursor-pointer hover:bg-stone-50 justify-center" data-testid="dep-none">
             <input type="radio" name="task-dependency" value="none" class="mr-2 hidden">
@@ -1807,14 +1945,14 @@ class TaskModalController {
         </div>
       </div>
 
-      <div class="mb-4 hidden" id="line-task-group">
-        <label class="block text-sm font-medium text-stone-700 mb-2">绑定前序任务</label>
+      <div class="mb-3 hidden" id="line-task-group">
+        <label class="block text-sm font-medium text-stone-700 mb-1">绑定前序任务</label>
         <select id="task-line-task" class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"></select>
         <p class="text-xs text-stone-400 mt-1">按截止日期倒序排列，可选择未开始的任务。</p>
       </div>
 
       <div class="mb-4">
-        <label class="flex items-center justify-between text-sm font-medium text-stone-700 mb-2">
+        <label class="flex items-center justify-between text-sm font-medium text-stone-700 mb-1">
           <span>开始时间</span>
           <div id="task-auto-schedule-wrap" class="inline-flex items-center gap-2 hidden">
             <div id="task-auto-schedule-label" class="text-sm text-stone-700">自动计算开始时间</div>
@@ -1828,16 +1966,16 @@ class TaskModalController {
           data-testid="task-starttime-input" data-scrapbook-input-value="">
       </div>
 
-      <div class="mb-4">
+      <div class="mb-3">
         <div class="flex gap-3">
           <div class="flex-1">
-            <label class="block text-sm font-medium text-stone-700 mb-2">预计工期（天）</label>
+            <label class="block text-sm font-medium text-stone-700 mb-1">预计工期（天）</label>
             <input type="number" id="task-estimated-days"
               class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
               placeholder="工期" min="0" value="" data-testid="task-estimated-days-input">
           </div>
           <div class="flex-1">
-            <label class="block text-sm font-medium text-stone-700 mb-2">预计工时（小时）</label>
+            <label class="block text-sm font-medium text-stone-700 mb-1">预计工时（小时）</label>
             <input type="number" id="task-hours"
               class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
               placeholder="工时" min="1" value="8" data-testid="task-hours-input">
@@ -1846,8 +1984,8 @@ class TaskModalController {
         <p id="task-hours-suggestion" class="text-xs text-stone-400 mt-1"></p>
       </div>
 
-      <div class="mb-4">
-        <label class="flex items-center justify-between text-sm font-medium text-stone-700 mb-2">
+      <div class="mb-3">
+        <label class="flex items-center justify-between text-sm font-medium text-stone-700 mb-1">
           <span>截止日期</span>
           <div id="task-auto-calc-end-wrap" class="inline-flex items-center gap-2">
             <div id="task-auto-calc-end-label" class="text-sm text-stone-700">使用统计数据计算截止日期</div>
@@ -1863,30 +2001,30 @@ class TaskModalController {
         <p id="deadline-order-error" class="text-xs text-red-500 hidden mt-1"></p>
       </div>
 
-      <div class="mb-2">
-        <label class="block text-sm font-medium text-stone-700 mb-2">实际开始时间（可选）</label>
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-stone-700 mb-1">实际开始时间（可选）</label>
         <input type="datetime-local" id="task-actual-starttime"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring">
       </div>
 
-      <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">完成时间（可选）</label>
+      <div class="mb-3">
+        <label class="block text-sm font-medium text-stone-700 mb-1">完成时间（可选）</label>
         <input type="datetime-local" id="task-completed-at"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
           data-testid="task-completed-at-input" placeholder="留空表示未完成">
         <p class="text-xs text-stone-400 mt-1">填写则标记为已完成，保存后会显示为完成时间。</p>
       </div>
 
-      <div id="buffer-group" class="mb-2 hidden">
-        <label class="block text-sm font-medium text-stone-700 mb-2">缓冲休息（天）</label>
+      <div id="buffer-group" class="mb-3 hidden">
+        <label class="block text-sm font-medium text-stone-700 mb-1">缓冲休息（天）</label>
         <input type="number" id="task-buffer-days" min="-1"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring">
-        <p class="text-xs text-stone-400 mt-1">说明：输入 -1 表示当天开始，0 表示次日开始，1 表示后二日开始</p>
+        <p class="text-xs text-stone-400 mt-1">输入 -1 表示下一任务当天开始，0 表示明天开始，1 表示后天开始</p>
         <p id="task-buffer-suggestion" class="text-xs text-stone-400 mt-1"></p>
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">稿酬与收款</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">稿酬与收款</label>
         <div class="flex gap-2 mb-2">
           <div class="flex-1">
             <input type="number" id="task-payment"
@@ -1906,10 +2044,10 @@ class TaskModalController {
             </select>
           </div>
         </div>
-        <p class="text-xs text-stone-400 mb-2">不输入约定金额则不显示稿酬信息</p>
+        <p class="text-xs text-stone-400 mb-1">不输入约定金额则不显示稿酬信息</p>
         <div id="payment-records-section">
           <div class="flex items-center justify-between mb-1">
-            <span class="text-xs text-stone-500 font-medium">收款记录</span>
+            <span class="text-xs text-stone-500 font-medium">收支记录</span>
             <div class="flex gap-1">
               <button type="button" id="add-payment-btn"
                 class="text-xs px-2 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 transition-colors"
@@ -1924,9 +2062,37 @@ class TaskModalController {
             </div>
           </div>
           <div id="payment-records-list" class="space-y-1 max-h-36 overflow-y-auto"></div>
-          <div id="payment-records-empty" class="text-xs text-stone-400 text-center py-2">暂无收款记录</div>
+          <div id="payment-records-empty" class="text-xs text-stone-400 text-center py-2">暂无收支记录</div>
         </div>
-        <div class="flex items-center gap-2 mt-3 pt-2 border-t border-stone-100">
+      </div>
+
+      <div id="pause-history-section" class="mb-4">
+        <label class="block text-sm font-medium text-stone-700 mb-1">历史暂停记录</label>
+        <div id="pause-history-list" class="space-y-1 max-h-36 overflow-y-auto mb-2"></div>
+        <div id="pause-history-empty" class="text-xs text-stone-400 text-center py-2">暂无暂停记录</div>
+        <div class="flex gap-2 mb-1">
+          <span class="flex-1 text-xs text-stone-500">新增暂停开始时间</span>
+          <span class="flex-1 text-xs text-stone-500">暂停结束时间</span>
+        </div>
+        <div class="flex gap-2 items-center">
+          <input type="datetime-local" id="pause-start-input"
+            class="flex-1 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring text-sm"
+            data-testid="pause-start-input">
+          <input type="datetime-local" id="pause-end-input"
+            class="flex-1 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring text-sm"
+            data-testid="pause-end-input">
+          <button type="button" id="add-pause-record-btn"
+            class="shrink-0 p-2 rounded-lg bg-green-50 text-green-700 hover:bg-green-100 transition-colors flex items-center justify-center"
+            data-testid="add-pause-record-btn">
+            <span class="material-icons text-sm">add</span>
+          </button>
+        </div>
+        <p id="pause-record-error" class="text-xs text-red-500 hidden mt-1">请填写完整的暂停开始和结束时间</p>
+      </div>
+
+      <div class="mb-4">
+        <label class="block text-sm font-medium text-stone-700 mb-1">废弃状态</label>
+        <div class="flex items-center gap-2">
           <input type="checkbox" id="task-abandoned" class="h-4 w-4 shrink-0" data-testid="task-abandoned-checkbox">
           <label for="task-abandoned" class="text-xs text-stone-500 cursor-pointer">
             标记为废弃（保留记录，从工作量计算中排除）
@@ -1942,7 +2108,7 @@ class TaskModalController {
       </div>
 
       <div class="mb-4 hidden">
-        <label class="block text-sm font-medium text-stone-700 mb-2">实际工时（小时）</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">实际工时（小时）</label>
         <input type="number" id="task-actual-hours"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
           placeholder="输入实际工时" min="0" value="0" data-testid="task-actual-hours-input">
@@ -1950,7 +2116,7 @@ class TaskModalController {
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">任务图片（可选）</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">任务图片（可选）</label>
         <div class="space-y-3">
           <div class="border-2 border-dashed border-stone-300 rounded-lg p-4 text-center hover:border-blue-400 transition-colors"
             id="image-upload-area">
@@ -1975,7 +2141,7 @@ class TaskModalController {
       </div>
 
       <div class="mb-6 hidden">
-        <label class="block text-sm font-medium text-stone-700 mb-2">
+        <label class="block text-sm font-medium text-stone-700 mb-1">
           初始进度: <span id="progress-value" class="text-blue-600 font-bold">0%</span>
         </label>
         <input type="range" id="task-progress" min="0" max="100" value="0" class="w-full"
@@ -1983,18 +2149,18 @@ class TaskModalController {
       </div>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-2">任务节点（可选）</label>
+        <label class="block text-sm font-medium text-stone-700 mb-1">任务节点（可选）</label>
         <div class="mb-3">
           <div class="text-xs text-stone-500 mb-2">添加常用节点：</div>
           <div class="flex flex-wrap gap-2" id="preset-nodes"><!-- populated dynamically --></div>
         </div>
         <div id="nodes-container" class="space-y-2">
-          <div class="flex gap-2">
+          <div class="flex gap-2 items-center">
             <input type="text"
               class="node-input flex-1 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
               placeholder="节点名称" data-testid="node-input" data-scrapbook-input-value="">
             <button type="button" id="add-node-btn" data-variant="add-node"
-              class="px-3 py-2 rounded-lg transition-colors" data-testid="add-node-btn">
+              class="p-2 rounded-lg transition-colors flex items-center justify-center" data-testid="add-node-btn">
               <span class="material-icons text-sm">add</span>
             </button>
           </div>
@@ -2024,7 +2190,7 @@ class TaskModalController {
 <div id="payment-record-modal" class="fixed inset-0 z-[70] hidden flex items-center justify-center p-4" style="background:rgba(0,0,0,0.4);">
   <div class="bg-white rounded-2xl w-full max-w-xs shadow-2xl">
     <div class="p-5">
-      <h3 id="pr-modal-title" class="text-base font-bold text-stone-800 mb-4">添加收款记录</h3>
+      <h3 id="pr-modal-title" class="text-base font-bold text-stone-800 mb-4">添加收支记录</h3>
       <div class="space-y-3">
         <div>
           <label class="block text-sm font-medium text-stone-700 mb-1">金额（元）</label>

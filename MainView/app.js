@@ -1282,12 +1282,13 @@ class TaskManager {
     if (!endRaw) return null;
     const end = new Date(endRaw);
     if (Number.isNaN(end.getTime())) return null;
-    // 优先使用 startTime（委托接受日），避免 actualStartTime 导致暂停天数被重复扣除
+    // 优先使用 actualStartTime（实际开始作画时间），避免将排期等待期计入消耗天数
+    // startTime 仅作 fallback（pauseHistory 记录的是绝对时间戳，与起始点无关，不存在重复扣除问题）
     const startRaw =
+      task.actualStartTime ||
       task.startTime ||
       task.starttime ||
       task.startDate ||
-      task.actualStartTime ||
       task.deadline;
     if (!startRaw) return null;
     const start = new Date(startRaw);
@@ -1504,16 +1505,38 @@ class TaskManager {
     // 构建有序前序链 [链头, ..., 紧前任务]（getChainAncestors 返回 [紧前,...,链头]，需 reverse）
     const orderedPreds = [...this.getChainAncestors(task)].reverse();
 
-    // urgentA 永远为分支，直接绑定到链根，使主链结构清晰
-    // orderedPreds[0] 即链头（根任务），无前序则变为独立任务
-    const newLineTaskId = orderedPreds.length > 0 ? orderedPreds[0].id : null;
+    // 根据 actualStartTime 定位分支锚点
+    // urgentA 永远为分支，主链排期保持不变
+    // 找 Q = 最后一个 startTime <= actualStart 的前序
+    //   无 Q              → 独立任务（lineTaskId = null）
+    //   gap <= 7天（含重叠）→ 分支自 Q（同档并行/紧随）
+    //   gap > 7天          → 往前一级（避免分支悬空过长）
+    const BRANCH_GAP_DAYS = 7;
+    let newLineTaskId = null;
+    if (task.actualStartTime) {
+      const actualStart = new Date(task.actualStartTime).getTime();
+      let qIdx = -1;
+      for (let i = orderedPreds.length - 1; i >= 0; i--) {
+        if (new Date(orderedPreds[i].startTime).getTime() <= actualStart) {
+          qIdx = i;
+          break;
+        }
+      }
+      if (qIdx !== -1) {
+        const Q = orderedPreds[qIdx];
+        const gapDays = (actualStart - new Date(Q.deadline).getTime()) / 86400000;
+        if (gapDays <= BRANCH_GAP_DAYS) {
+          newLineTaskId = Q.id;
+        } else {
+          newLineTaskId = qIdx > 0 ? orderedPreds[qIdx - 1].id : null;
+        }
+      }
+      // qIdx === -1: actualStart 早于所有前序 → 独立任务
+    }
 
     const message =
       `任务"${task.name}"已实际开始，早于链式计算的开始时间。是否确认加急并调整链顺序？`;
     this.showConfirmDialog(message, () => {
-      // 先将 C 的后继（D）回接到 C 的原前序（B），保证主链不断裂
-      const originalLineTaskId = task.lineTaskId;
-      this.rebindSuccessorsTo(task.id, originalLineTaskId);
       task.urgentA = true;  // 标记为「实际开始加急」，BarView 将以 actualStartTime 为 bar 起点
       task.lineTaskId = newLineTaskId;
       task.dependencyType = newLineTaskId ? "line" : "none";
@@ -1533,19 +1556,15 @@ class TaskManager {
           task.starttime = nextStart;
         }
       }
-      if (task.autoCalcEnd) {
+      if (task.autoCalcEnd && !task.completed) {
         // urgentA 任务截止日期基于实际开始时间计算
+        // 已完成的任务不应再被修改
         const autoEnd = this.computeAutoDeadline(
           task.actualStartTime || task.startTime || task.starttime,
           task.estimatedHours,
           task.type
         );
         if (autoEnd) task.deadline = autoEnd;
-      }
-      // 从原前序（B）出发重新排期，更新回接过来的后继任务（D）的开始时间
-      if (originalLineTaskId) {
-        const parentTask = (this.tasks || []).find((t) => t.id === originalLineTaskId);
-        if (parentTask) this.adjustChainFrom(parentTask);
       }
       this.saveAllData();
       this.renderTasks(task.id);
@@ -1594,8 +1613,9 @@ class TaskManager {
         const _dlBase = (child.urgentA && child.actualStartTime)
           ? child.actualStartTime
           : (child.startTime || child.starttime);
-        if (child.autoCalcEnd) {
+        if (child.autoCalcEnd && !child.completed) {
           // 使用统计数据计算截止日期
+          // 已完成的任务不应再被修改
           const nextDeadline = this.computeAutoDeadline(
             _dlBase,
             child.estimatedHours,
@@ -1607,8 +1627,9 @@ class TaskManager {
             changed.add(child.id);
             try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
           }
-        } else if (Number.isFinite(child.estimatedDay) && child.estimatedDay >= 0) {
+        } else if (!child.completed && Number.isFinite(child.estimatedDay) && child.estimatedDay >= 0) {
           // 使用手动工期向后传播截止日期（支持 0 = 当天完成），只修改日期部分并保留原有时分
+          // 已完成的任务不应再被修改
           const baseStart = new Date(_dlBase);
           if (!isNaN(baseStart.getTime())) {
             const existingDl = child.deadline ? new Date(child.deadline) : null;
@@ -1626,8 +1647,8 @@ class TaskManager {
               try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
             }
           }
-        } else {
-          // 边界情况：仅调整了开始时间，未调整截止日期
+        } else if (!child.completed) {
+          // 边界情况：仅调整了开始时间，未调整截止日期（已完成的任务不应再被修改）
           // 如果新开始时间超过了现有截止日期，保持最小工期（避免截止 < 开始）
           if (childChanged && child.deadline && child.startTime) {
             const dlDate = new Date(child.deadline);
@@ -2867,7 +2888,7 @@ class TaskManager {
 
   // ═══ 收款相关辅助方法 ═══
 
-  // 统计用净收（到账-退款）；若无收款记录则向后兼容使用 task.payment
+  // 统计用净收（到账-退款）；若无收支记录则向后兼容使用 task.payment
   getTaskNetIncomeForStats(task) {
     if (!task || task.abandoned) return 0;
     const records = task.paymentRecords;
@@ -2918,11 +2939,44 @@ class TaskManager {
     return { label: "未收款", variant: "pending" };
   }
 
-  // 渲染 modal 内的收款记录列表
+  // 渲染 modal 内的收支记录列表
   // 废弃/恢复任务（任务卡片上的快速操作）
   toggleAbandoned(taskId) {
     const task = (this.tasks || []).find((t) => t.id === taskId);
     if (!task) return;
+
+    // 废弃时：若该任务是链式委托且存在后续任务，则执行链式重构
+    if (!task.abandoned) {
+      const successors = this.getSuccessorTasks(taskId);
+      if (successors.length > 0) {
+        const predTask = task.lineTaskId
+          ? (this.tasks || []).find((t) => t.id === task.lineTaskId)
+          : null;
+        const succNames = successors.map((s) => `"${s.name}"`).join('、');
+        const predDesc = predTask ? `前序任务"${predTask.name}"` : '链头位置（作为独立任务）';
+        const message = `任务"${task.name}"是链式委托中间节点。\n废弃后：\n· 后续任务 ${succNames} 将衔接到${predDesc}\n· 本任务将作为支链保留并标记废弃\n\n是否继续？`;
+        this.showConfirmDialog(message, () => {
+          // 将后续任务重新绑定到当前任务的前序任务
+          const newParentId = task.lineTaskId || null;
+          this.rebindSuccessorsTo(taskId, newParentId);
+          // 保留被废弃任务的 lineTaskId，使其作为支链继续挂在前序任务下
+          // 标记当前任务为废弃
+          task.abandoned = true;
+          task.abandonedAt = new Date().toISOString();
+          // 触发前序任务的链式时间调整，更新被重绑后续任务的排期
+          if (predTask) {
+            try { this.adjustChainFrom(predTask); } catch (e) { console.warn('adjustChainFrom on abandon failed', e); }
+          }
+          this.saveAllData();
+          this.renderTasks(taskId);
+          this.updateStats();
+          this.renderCalendar();
+        }, { confirmLabel: '废弃', confirmClass: 'bg-amber-500 text-white hover:bg-amber-600' });
+        return;
+      }
+    }
+
+    // 默认：直接切换废弃状态（非链式任务，或恢复废弃，或链尾任务）
     task.abandoned = !task.abandoned;
     task.abandonedAt = task.abandoned ? new Date().toISOString() : null;
     this.saveAllData();

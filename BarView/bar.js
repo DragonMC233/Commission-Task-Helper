@@ -91,6 +91,7 @@
     optTheme: document.getElementById("opt-theme"),
     insertIndicator: document.getElementById("insert-indicator"),
     selectionRect: document.getElementById("selection-rect"),
+    todayMarker: document.getElementById("today-marker"),
   };
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -478,7 +479,12 @@
       chains.push({ rootId, order, chainStart, chainEnd });
     }
 
-    chains.sort((a, b) => a.chainStart - b.chainStart || a.rootId.localeCompare(b.rootId));
+    // 链排序：优先按链长度降序（长链靠前），同长度按最早开始时间升序
+    chains.sort((a, b) =>
+      b.order.length - a.order.length ||
+      a.chainStart - b.chainStart ||
+      a.rootId.localeCompare(b.rootId)
+    );
     state.order = chains.flatMap((c) => c.order.map((t) => String(t.id)));
   };
 
@@ -543,15 +549,15 @@
       curGroup.tasks.push(task);
     });
 
-    // Apply a bounded chain-priority: chains receive a small "boost" upward proportional to their size,
-    // but the boost is capped so tasks that start much earlier won't be pushed below late chains.
+    // 链优先加成：链节点数越多加成越大，使长链在贪心不重叠排列中优先占位
+    // 加成足够强以保证"链越长越靠上"，同时独立任务仍可填充时间不重叠的空隙行
     groups.sort((a, b) => {
       const aStart = Math.min(...a.tasks.map((t) => t.__startDate.getTime()));
       const bStart = Math.min(...b.tasks.map((t) => t.__startDate.getTime()));
       const aIsChain = a.tasks.length > 1;
       const bIsChain = b.tasks.length > 1;
-      const MAX_BOOST_DAYS = 14; // cap chain boost to 2 weeks
-      const BOOST_PER_NODE_DAYS = 2; // each additional node provides this many days of boost
+      const MAX_BOOST_DAYS = 3650; // 上限约 10 年，实际无限制
+      const BOOST_PER_NODE_DAYS = 180; // 每个链节点提供半年加成
       const aBoostDays = aIsChain ? Math.min(MAX_BOOST_DAYS, a.tasks.length * BOOST_PER_NODE_DAYS) : 0;
       const bBoostDays = bIsChain ? Math.min(MAX_BOOST_DAYS, b.tasks.length * BOOST_PER_NODE_DAYS) : 0;
       const MS_PER_DAY = 86400000;
@@ -563,7 +569,11 @@
 
     // For each group, assign local rows then map to global rows
     groups.forEach((group) => {
-      const tasks = group.tasks.slice().sort((a, b) => a.__startDate - b.__startDate);
+      const tasks = group.tasks.slice().sort((a, b) => {
+        // 废弃任务在同一时间点时排在非废弃任务之后，确保主链仳怪先占 row 0
+        if (!!a.abandoned !== !!b.abandoned) return a.abandoned ? 1 : -1;
+        return a.__startDate - b.__startDate;
+      });
       // Pack into local rows within the group (greedy non-overlap)
       const localRowEnds = [];
       const localRows = []; // array of arrays
@@ -927,6 +937,30 @@
     els.grid.innerHTML = gridLineFragments.join("");
   };
 
+  // ── Today Marker ──
+  // Positions the today line + nub at the current date column,
+  // and auto-scrolls to center it on first load.
+  const updateTodayMarker = () => {
+    if (!els.todayMarker) return;
+    const today = toDateOnly(new Date());
+    if (!today || !state.range.start || !state.range.end) {
+      els.todayMarker.classList.remove("visible");
+      return;
+    }
+    // Only show if today falls within the rendered range
+    if (today < state.range.start || today > state.range.end) {
+      els.todayMarker.classList.remove("visible");
+      return;
+    }
+    const { dayWidth } = state.zoomSteps[state.zoomIndex];
+    const offsetDays = daysBetween(state.range.start, today);
+    // Place the marker at the center of today's column
+    const leftPx = offsetDays * dayWidth + dayWidth / 2;
+    els.todayMarker.style.left = `${leftPx}px`;
+    els.todayMarker.classList.add("visible");
+    return leftPx;
+  };
+
   const renderBars = () => {
     const { start } = state.range;
     const { dayWidth } = state.zoomSteps[state.zoomIndex];
@@ -962,12 +996,13 @@
           ? ok.oklch
           : ok.rgb
         : baseColor;
-      // 用户自定义系数（0~1），控制已完成任务整体透明度
+      // 用户自定义系数（0~1），再乘以 0.8 作为已完成任务条整体透明度
       const userCoeff = state.data?.completedTaskOpacity ?? 0.8;
+      const completedOpacity = Math.max(0, Math.min(1, userCoeff * 0.8));
       // 废弃任务：固定低透明度（0.45），灰色覆盖
       const isAbandoned = !!task.abandoned;
-      // 已完成任务：整体 userCoeff（文字透明度保持一致）；废弃任务：0.45；未完成任务：1
-      const opacity = isAbandoned ? 0.45 : task.completed ? userCoeff : 1;
+      // 已完成任务：整体 completedOpacity；废弃任务：0.45；未完成任务：1
+      const opacity = isAbandoned ? 0.45 : task.completed ? completedOpacity : 1;
       // 废弃任务使用灰色，覆盖原本的类型颜色
       const effectiveBarBg = isAbandoned ? "#e5e7eb" : blendedBg;
       const effectiveRing = isAbandoned ? "#94a3b8" : ring;
@@ -1127,8 +1162,32 @@
         const finalWidthPx = width - curPx;
         if (finalWidthPx > 0) segs.push({ relLeftPx: curPx, widthPx: finalWidthPx });
 
+        // ── 合并重叠分段：基于条的视觉边缘触碰判定 ──
+        // 条的最小渲染宽度约 48px（dot 12px + 边距 9px×2 + label-wrapper 居中约 6px）
+        // 当 computedWidth < 48 时，条实际渲染宽度为 48px，两侧各溢出 (48-w)/2
+        const MIN_BAR_WIDTH = 48;
+        if (segs.length >= 2) {
+          const merged = [];
+          let cur = { relLeftPx: segs[0].relLeftPx, widthPx: segs[0].widthPx };
+          const visRight = (s) => s.relLeftPx + (s.widthPx + Math.max(MIN_BAR_WIDTH, s.widthPx)) / 2;
+          const visLeft  = (s) => s.relLeftPx + (s.widthPx - Math.max(MIN_BAR_WIDTH, s.widthPx)) / 2;
+          for (let i = 1; i < segs.length; i++) {
+            const nxt = segs[i];
+            const visualGap = visLeft(nxt) - visRight(cur);
+            if (visualGap <= 0) {
+              cur.widthPx = nxt.relLeftPx + nxt.widthPx - cur.relLeftPx;
+            } else {
+              merged.push(cur);
+              cur = { relLeftPx: nxt.relLeftPx, widthPx: nxt.widthPx };
+            }
+          }
+          merged.push(cur);
+          segs.length = 0;
+          segs.push(...merged);
+        }
+
         if (segs.length < 2) {
-          // 兜底：片段不足时回退
+          // 兜底：片段不足时回退（含合并后只剩一段的情况）
           els.bars.appendChild(bar);
         } else {
           segs.forEach((seg, idx) => {
@@ -1229,8 +1288,8 @@
         }
       }
 
-      // ── 链式追加按钮：在链尾任务右侧显示一个无圆点的圆形 + 按钮 ──
-      if (task.dependencyType === 'line' && !chainParentIds.has(String(task.id))) {
+      // ── 链式追加按钮：在链尾任务右侧显示，废弃任务不显示 ──
+      if (task.dependencyType === 'line' && !chainParentIds.has(String(task.id)) && !task.abandoned) {
         const appendGap = 14; // 宽一些的间距，容纳虚线连接线
         const appendNodeColor = getNearestTailwindTextHex(baseColor) || '#0f172a';
         // 虚线连接线：从 bar 右端延伸到 + 按钮左端（用 appendRight 保证暂停任务不重叠）
@@ -1412,6 +1471,7 @@
     renderBars();
     renderLinks();
     updateStickyLabels();
+    updateTodayMarker();
     scrollToToday();
   };
 
@@ -1520,7 +1580,10 @@
     if (!today || !state.range.start) return;
     const { dayWidth } = state.zoomSteps[state.zoomIndex];
     const offsetDays = daysBetween(state.range.start, today);
-    const target = Math.max(0, offsetDays * dayWidth - els.ganttScroll.clientWidth * 0.3);
+    // Center today's column in the viewport
+    const todayCenterPx = offsetDays * dayWidth + dayWidth / 2;
+    const viewportCenter = els.ganttScroll.clientWidth / 2;
+    const target = Math.max(0, todayCenterPx - viewportCenter);
     els.ganttScroll.scrollLeft = target;
     state.scrolledToToday = true;
   };
@@ -2593,6 +2656,7 @@
     const focusDay = (els.ganttScroll.scrollLeft + localX) / oldDayWidth;
     state.zoomIndex = nextIndex;
     localStorage.setItem('barview-zoom-index', nextIndex);
+    state.scrolledToToday = false; // allow re-centering after zoom
     renderAll();
     const targetLeft = focusDay * newDayWidth - localX;
     const maxLeft = Math.max(0, els.ganttContent.scrollWidth - rect.width);
@@ -3377,6 +3441,60 @@
             showTaskPreview(tid);
           });
         }
+        return;
+      }
+
+      // Abandon / restore button
+      const abandonBtn = target.closest(".abandon-btn");
+      if (abandonBtn) {
+        const tid = parseInt(abandonBtn.dataset.taskId, 10) || taskId;
+        const t = state.tasks.find((x) => x.id === tid);
+        if (!t) return;
+        if (!t.abandoned) {
+          const successors = state.tasks.filter(
+            (s) => s.dependencyType === 'line' && String(s.lineTaskId) === String(tid)
+          );
+          if (successors.length > 0) {
+            const predTask = t.lineTaskId
+              ? state.tasks.find((x) => String(x.id) === String(t.lineTaskId))
+              : null;
+            const succNames = successors.map((s) => `"${s.name}"`).join('、');
+            const predDesc = predTask ? `前序任务"${predTask.name}"` : '链头位置（作为独立任务）';
+            const message = `任务"${t.name}"是链式委托中间节点。\n废弃后：\n· 后续任务 ${succNames} 将衔接到${predDesc}\n· 本任务将作为支链保留并标记废弃\n\n是否继续？`;
+            const dialogEl = document.createElement('div');
+            dialogEl.className = 'fixed inset-0 z-[70] flex items-center justify-center p-4';
+            dialogEl.style.backgroundColor = 'rgba(0,0,0,0.5)';
+            dialogEl.innerHTML = `
+              <div class="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
+                <div class="mb-4"><p class="text-stone-800 whitespace-pre-line">${message}</p></div>
+                <div class="flex gap-3">
+                  <button class="confirm-cancel flex-1 px-4 py-2 border border-stone-300 rounded-lg hover:bg-stone-50 transition-colors">取消</button>
+                  <button class="confirm-ok flex-1 px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors">废弃</button>
+                </div>
+              </div>`;
+            document.body.appendChild(dialogEl);
+            dialogEl.querySelector('.confirm-cancel').addEventListener('click', () => dialogEl.remove());
+            dialogEl.querySelector('.confirm-ok').addEventListener('click', () => {
+              const newParentId = t.lineTaskId || null;
+              successors.forEach((s) => { s.lineTaskId = newParentId; });
+              // 保留被废弃任务的 lineTaskId，使其作为支链继续挂在前序任务下
+              t.abandoned = true;
+              t.abandonedAt = new Date().toISOString();
+              if (predTask) {
+                try { reflowChainFrom(String(predTask.id)); } catch (e) { console.warn('reflowChainFrom on abandon failed', e); }
+              }
+              dialogEl.remove();
+              saveData().then(() => { renderAll(); showTaskPreview(tid); });
+            });
+            dialogEl.addEventListener('click', (e) => { if (e.target === dialogEl) dialogEl.remove(); });
+            return;
+          }
+        }
+        // Default: toggle abandoned (no successors or restoring)
+        pushUndo();
+        t.abandoned = !t.abandoned;
+        t.abandonedAt = t.abandoned ? new Date().toISOString() : null;
+        saveData().then(() => { renderAll(); showTaskPreview(tid); });
         return;
       }
 

@@ -218,7 +218,8 @@
                               showingRecycleBin
                                 ? `<button class="flex items-center restore-btn" title="还原" aria-label="还原" data-task-id="${task.id}" data-testid="restore-btn-${task.id}"><span class="material-icons text-sm">restore</span></button>
                                  <button class="flex items-center delete-btn" title="彻底删除" aria-label="彻底删除" data-task-id="${task.id}" data-testid="delete-btn-${task.id}"><span class="material-icons text-sm scale-102">delete_forever</span></button>`
-                                : `<button class="flex items-center delete-btn" data-task-id="${task.id}" data-testid="delete-btn-${task.id}"><span class="material-icons text-sm scale-102">delete</span></button>`
+                                : `<button class="flex items-center delete-btn" data-task-id="${task.id}" data-testid="delete-btn-${task.id}"><span class="material-icons text-sm scale-102">delete</span></button>
+                                 <button class="flex items-center abandon-btn" title="${task.abandoned ? '恢复任务' : '废弃任务'}" data-task-id="${task.id}" data-testid="abandon-btn-${task.id}" style="opacity:${task.abandoned ? 1 : 0.45};"><span class="material-icons text-sm" style="color:${task.abandoned ? '#f97316' : 'currentColor'}">${task.abandoned ? 'undo' : 'block'}</span></button>`
                             }
                         </div>
                     </div>

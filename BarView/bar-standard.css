@@ -238,6 +238,7 @@
   right: 0;
   bottom: 0;
   pointer-events: none;
+  z-index: 0;
 }
 
 .grid-line {
@@ -259,7 +260,7 @@
   height: calc(100% - var(--timeline-height));
   overflow: visible;
   pointer-events: none;
-  z-index: 10;
+  z-index: 35;
 }
 
 /* Link styling: use CSS variables so themes can override colors without touching JS */
@@ -295,7 +296,7 @@
   top: var(--timeline-height);
   left: 0;
   right: 0;
-  z-index: 1;
+  z-index: 30;
 }
 
 .gantt-row {
@@ -549,6 +550,51 @@
     width: 100%;
     justify-content: flex-start;
   }
+}
+
+/* 已完成任务：使用 slate 灰色以区别活跃任务 */
+.gantt-bar.completed { color: var(--bar-muted); }
+
+/* ============================================================
+   Today Marker — 今日标记线 + 圆点
+   标记定位在 timeline-day-ticks 行内，圆点居中于该行
+   ============================================================ */
+.today-marker {
+  position: absolute;
+  /* 起点对齐 day-ticks 行顶部: 2rem(year) + 2rem(month) + 1.75rem(day-label) */
+  top: 5.75rem;
+  bottom: 0;
+  z-index: 25; /* z-index 层级: grid=0, timeline=20, marker=25, bars=30, links=35 */
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.today-marker.visible {
+  opacity: 1;
+}
+
+.today-marker-line {
+  position: absolute;
+  /* 竖线从 day-ticks 行中心开始 (1.5rem / 2 = 0.75rem) */
+  top: 0.75rem;
+  bottom: 0;
+  width: 2px;
+  left: 0;
+  background: transparent;
+  border-left: 2px solid color-mix(in oklab, var(--bar-accent) 40%, transparent);
+}
+
+.today-marker-nub {
+  position: absolute;
+  /* 圆点居中于 day-ticks 行: 0.75rem - 5px(半高) */
+  top: calc(0.75rem - 5px);
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--bar-accent);
+  transform: translateX(-4px);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--bar-accent) 40%, transparent);
 }
 
 /* 已完成任务：使用 slate 灰色以区别活跃任务 */
