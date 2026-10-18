@@ -1,5 +1,5 @@
-﻿<!DOCTYPE html>
-<html lang="zh-CN" version="委托排单助手3.1.2">
+<!DOCTYPE html>
+<html lang="zh-CN">
 
 <head>
   <meta charset="UTF-8">
@@ -7,18 +7,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>委托排单助手3.1.2</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
-  <script>window.injectInfo = { env: "PROD" };</script>
-  <script src="mini-app-log.js" data-logging-script="true"></script>
-  <script defer="" src="tailwind4.1.13.js"></script>
+  <script defer src="tailwind4.1.13.js"></script>
   <link id="theme-stylesheet" href="暖色.css" rel="stylesheet">
-  <script>
-    window.artifactId = "flashapp-f3b42c12ac0f421e";
-    window.artifactVersion = "65";
-    window.trace_id = "219ff71117660771533985446e6f7c";
-  </script>
   <link rel="stylesheet" href="base-style.css">
   <!-- Tailwind 基础样式已拆分到 base-style.css -->
-
 </head>
 
 <body>
@@ -166,6 +158,29 @@
               </div>
             </div>
           </div>
+      </section>
+
+      <!-- 工时稿价分析面板 -->
+      <section id="pricing-analysis" class="mb-10">
+        <div class="recommendations-card rounded-xl shadow-sm">
+          <div
+            class="flex items-center justify-between p-3 recommendations-header cursor-pointer transition-colors rounded-xl"
+            id="pricing-analysis-toggle">
+            <div class="flex items-center">
+              <span class="material-icons mr-2 icon-lightbulb">payments</span>
+              <h3 class="font-semibold section-title">工时稿价分析</h3>
+            </div>
+            <span id="pricing-analysis-chevron"
+              class="material-icons recommendations-chevron chevron-rotate">expand_less</span>
+          </div>
+
+          <div id="pricing-analysis-content" class="collapse-content">
+            <div class="p-3">
+              <div id="pricing-analysis-list"></div>
+              <div id="pricing-analysis-empty" class="text-xs p-2" style="display:none;">暂无已完成委托数据</div>
+            </div>
+          </div>
+        </div>
       </section>
     </div>
 
@@ -316,15 +331,15 @@
     </div>
   </div>
 
+  <script src="/scripts/task-statistics.js"></script>
+  <script src="/scripts/task-time.js"></script>
   <script src="/scripts/task-utils.js"></script>
+  <script src="/scripts/task-image.js"></script>
+  <script src="/scripts/task-card-shared.js"></script>
+  <script src="/scripts/task-chain.js"></script>
   <script src="/scripts/task-modal-shared.js"></script>
   <script>TaskModalController.injectHTML();</script>
   <script src="app.js"></script>
+</body>
 
-  <script data-logging-script="true">console.log("[MiniApp] body结束前");</script>
-  </script>
-
-  <link rel="stylesheet" href="base-style.css">
-  <!-- Tailwind 基础样式已拆分到基础样式.css -->
-
-  </head>
+</html>

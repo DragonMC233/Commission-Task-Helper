@@ -33,8 +33,22 @@ class TaskModalController {
         this.tempPaymentRecords = [];
         this.tempPauseHistory = [];
         this.editingPauseId = null; // 非 null 表示正在编辑某条暂停记录
-        this.currentImageData = null;
+        // ── 图片 ──
+        // currentImagePath：本次弹窗里新上传、待绑定到任务的图片路径（pic/xxx.png）
+        // imageSize：/upload-image 返回的 {w, h}
+        // _pendingUploadPath：已上传但任务还没保存的文件，取消编辑时删除
+        this.currentImagePath = null;
+        this.imageSize = null;
         this.imageChanged = false;
+        this._pendingUploadPath = null;
+        this._previewObjectUrl = null;
+        this._uploading = false; // 图片上传进行中（此时保存会漏掉图片）
+        this.pendingTaskId = null; // 新增任务时预生成的 id，供图片文件名使用
+        this.deadlineManualOverride = false; // 用户手工修改了工期/截止日期，则优先保留手工值
+        // 统计时间衰减半衰期（天）：与 app.js / bar.js 保持一致
+        // 注意：分位数是「取某个具体样本值」的跳跃式统计，权重只能微调排列位置，
+        // 样本量 < 15 时调整本参数几乎不会改变结果 —— 别指望靠它解决「旧数据过时」
+        this.statisticsHalfLifeDays = 365;
 
         // 图标资源调色板
         this.fontIconsPalette = ["outlined", "regular", "round", "sharp", "twotone"];
@@ -74,7 +88,7 @@ class TaskModalController {
         if (cancelBtn) cancelBtn.addEventListener("click", async () => {
             this.resetImageUpload();
             if (this.onCancel) {
-                try { await this.onCancel(); } catch (e) {}
+                await this.onCancel();
             }
             this.hideModal();
         });
@@ -165,10 +179,14 @@ class TaskModalController {
         });
         if (hoursInput) hoursInput.addEventListener("input", () => this.updateDeadlineSuggestion());
         if (deadlineInput) deadlineInput.addEventListener("change", () => {
+            this.deadlineManualOverride = true;
             this.syncDeadlineToEstimatedDays();
             this.syncDeadlineGuards();
         });
-        if (estimatedDaysInput) estimatedDaysInput.addEventListener("input", () => this.syncEstimatedDaysToDeadline());
+        if (estimatedDaysInput) estimatedDaysInput.addEventListener("input", () => {
+            this.deadlineManualOverride = true;
+            this.syncEstimatedDaysToDeadline();
+        });
         if (typeOptions) typeOptions.addEventListener("change", () => this.updateDeadlineSuggestion());
 
         // 类型 radios 单独监听 (某些浏览器 change 不冒泡)
@@ -225,6 +243,7 @@ class TaskModalController {
         if (!modal) return;
 
         this.editingTaskId = taskId;
+        this.deadlineManualOverride = false;
 
         // 渲染动态内容
         this.renderPresetNodeButtons();
@@ -241,11 +260,8 @@ class TaskModalController {
         const setDepRadio = (val) => {
             depRadios.forEach((r) => { r.checked = r.value === val; });
         };
-        const toLocal = (v) => {
-            if (!v) return "";
-            const dt = new Date(v);
-            return Number.isNaN(dt.getTime()) ? "" : this.formatDateTimeLocal(dt);
-        };
+        // 文件里存的是 ISO UTC，输入框里显示访问者本地时区的时间
+        const toLocal = (v) => (v ? window.taskTime.toDisplay(v) : "");
 
         if (taskId) {
             // ═══ 编辑任务 ═══
@@ -260,9 +276,7 @@ class TaskModalController {
                 task.startTime || task.starttime || task.startDate || task.deadline || ""
             );
             document.getElementById("task-deadline").value = toLocal(task.deadline || "");
-            document.getElementById("task-completed-at").value = task.completedAt
-                ? this.formatDateTimeLocal(task.completedAt)
-                : "";
+            document.getElementById("task-completed-at").value = toLocal(task.completedAt || "");
             document.getElementById("task-hours").value = task.estimatedHours || 8;
             const estDaysEl = document.getElementById("task-estimated-days");
             if (estDaysEl) {
@@ -270,8 +284,8 @@ class TaskModalController {
                     estDaysEl.value = task.estimatedDay;
                 } else {
                     // 从 startTime 和 deadline 推算（使用按日期差口径，允许 0）
-                    const s = new Date(task.startTime || task.starttime || task.startDate);
-                    const e = new Date(task.deadline);
+                    const s = window.taskTime.parseOrInvalid(task.startTime || task.starttime || task.startDate);
+                    const e = window.taskTime.parseOrInvalid(task.deadline);
                     if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
                         const sUtc = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
                         const eUtc = Date.UTC(e.getFullYear(), e.getMonth(), e.getDate());
@@ -330,17 +344,22 @@ class TaskModalController {
             this.updateDependencyUI(depType);
 
             // 更新建议 (包含建议工期和可能的自动截止填充)
-            try { this.updateDeadlineSuggestion(); } catch (e) { /* ignore */ }
+            this.updateDeadlineSuggestion();
             this.syncDeadlineGuards();
 
             // 节点
             this.tempNodes = task.nodes ? [...task.nodes] : [];
             this.renderNodes();
 
-            // 图片 — 不把旧路径写入 currentImageData
-            this.currentImageData = null;
+            // 图片 — 旧图只用于预览，不写入 currentImagePath
+            this.currentImagePath = null;
+            this.imageSize = null;
             this.imageChanged = false;
+            this._pendingUploadPath = null;
             if (task.image) {
+                // 明确标记「未被移除」，否则上一个任务的 cleared 状态会串过来
+                const uploadAreaEl = document.getElementById("image-upload-area");
+                if (uploadAreaEl) uploadAreaEl.dataset.cleared = "false";
                 this.showImagePreview(task.image);
             } else {
                 this.resetImageUpload();
@@ -384,7 +403,7 @@ class TaskModalController {
             document.getElementById("progress-value").textContent = "0%";
 
             // 初始化时计算并显示建议
-            try { this.updateDeadlineSuggestion(); } catch (e) { /* ignore */ }
+            this.updateDeadlineSuggestion();
             this.syncDeadlineGuards();
 
             const typeRadio = document.querySelector(
@@ -408,6 +427,8 @@ class TaskModalController {
 
             this.tempNodes = [];
             this.renderNodes();
+            // 新增任务：预生成 id，图片上传时用它做文件名，保存时复用同一个 id
+            this.pendingTaskId = Date.now();
             this.resetImageUpload();
         }
 
@@ -427,7 +448,11 @@ class TaskModalController {
         const modal = document.getElementById("task-modal");
         if (modal) modal.classList.add("hidden");
         this.editingTaskId = null;
-        this.currentImageData = null;
+        this.currentImagePath = null;
+        this.imageSize = null;
+        this.deadlineManualOverride = false;
+        // 走到这里说明本次编辑结束且没把图挂到任务上 → 删掉刚上传的临时图
+        this._discardPendingUpload();
     }
 
     // ═══════════════════════════════════════
@@ -446,6 +471,8 @@ class TaskModalController {
                 if (result === false) shouldClose = false;
             }
             if (shouldClose) {
+                // 任务已落库，本次上传的图已产生引用，不再算临时文件
+                this._pendingUploadPath = null;
                 this.hideModal();
                 this.imageChanged = false;
             }
@@ -464,6 +491,12 @@ class TaskModalController {
         const getNumVal = (id) => Number(document.getElementById(id)?.value) || 0;
         const getChecked = (name) => document.querySelector(`input[name="${name}"]:checked`)?.value;
         const getBool = (id) => !!document.getElementById(id)?.checked;
+
+        // 图片还在上传就保存，会把刚选的图漏掉，等它传完再存
+        if (this._uploading) {
+            this.showMessage("图片还在上传，请稍候再保存");
+            return null;
+        }
 
         const name = getVal("task-name");
         if (!name) {
@@ -484,7 +517,8 @@ class TaskModalController {
         }
 
         const progress = parseInt(document.getElementById("task-progress")?.value) || 0;
-        let starttime = getVal("task-starttime");
+        // 输入框里是访问者本地的时间，先转成 ISO UTC，后续计算与写盘都用 UTC
+        let starttime = window.taskTime.formatForStorage(getVal("task-starttime"));
         const dependencyType = getChecked("task-dependency") || "none";
         const lineTaskIdRaw = document.getElementById("task-line-task")?.value;
         let lineTaskId = lineTaskIdRaw ? Number(lineTaskIdRaw) : null;
@@ -496,10 +530,13 @@ class TaskModalController {
         const bufferDays = Number.isFinite(Number(bufferDaysInput))
             ? Math.max(-1, Math.round(Number(bufferDaysInput)))
             : 1;
-        const actualStartTime = getVal("task-actual-starttime") || null;
+        const actualStartTime = window.taskTime.formatForStorage(getVal("task-actual-starttime")) || null;
         const estimatedHours = parseInt(document.getElementById("task-hours")?.value) || 8;
         const estimatedDayRaw = parseInt(document.getElementById("task-estimated-days")?.value, 10);
         const estimatedDay = Number.isFinite(estimatedDayRaw) && estimatedDayRaw >= 0 ? estimatedDayRaw : 0;
+
+        // 正在编辑的任务：链式重算时用来保留它自己写的时分
+        const editingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
 
         // 自动计算开始时间 (链式 + 自动调度)
         if (dependencyType === "line" && autoSchedule && lineTaskId) {
@@ -514,14 +551,13 @@ class TaskModalController {
                     bufferToUse = Math.max(1, statDays);
                 }
             }
-            const autoStart = this.computeAutoStartTime(lineTaskId, bufferToUse);
+            const autoStart = this.computeAutoStartTime(lineTaskId, bufferToUse, editingTask);
             if (autoStart) starttime = autoStart;
         }
 
-        let deadline = getVal("task-deadline");
-        if (autoCalcEnd) {
+        let deadline = window.taskTime.formatForStorage(getVal("task-deadline"));
+        if (autoCalcEnd && !this.deadlineManualOverride) {
             // urgentA 任务：截止日期基于实际开始时间；普通任务：基于计划开始时间
-            const editingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
             const calcBase = (editingTask && editingTask.urgentA && actualStartTime) ? actualStartTime : starttime;
             const autoEnd = this.computeAutoDeadline(calcBase, estimatedHours, type);
             if (autoEnd) deadline = autoEnd;
@@ -545,7 +581,7 @@ class TaskModalController {
         const paymentRecords = [...(this.tempPaymentRecords || [])];
         const pauseHistory = [...(this.tempPauseHistory || [])];
         const totalPausedDays = pauseHistory.reduce((sum, r) => {
-            const s = new Date(r.pausedAt), e = new Date(r.resumedAt);
+            const s = window.taskTime.parseOrInvalid(r.pausedAt), e = window.taskTime.parseOrInvalid(r.resumedAt);
             if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
                 return sum + (e - s) / 86400000;
             }
@@ -555,7 +591,7 @@ class TaskModalController {
         const existingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
         const abandonedAtInputVal = document.getElementById("task-abandoned-at")?.value;
         const abandonedAt = abandoned
-          ? (abandonedAtInputVal ? new Date(abandonedAtInputVal).toISOString() : (existingTask?.abandonedAt || new Date().toISOString()))
+          ? (abandonedAtInputVal ? window.taskTime.parseOrInvalid(abandonedAtInputVal).toISOString() : (existingTask?.abandonedAt || new Date().toISOString()))
           : null;
 
         // 图片处理
@@ -563,8 +599,8 @@ class TaskModalController {
         const uploadArea = document.getElementById("image-upload-area");
         if (uploadArea && uploadArea.dataset.cleared === "true") {
             image = null;
-        } else if (this.imageChanged && this.currentImageData) {
-            image = this.currentImageData;
+        } else if (this.imageChanged && this.currentImagePath) {
+            image = this.currentImagePath;
         } else if (this.editingTaskId) {
             // 保留原图
             const orig = this.dataSource.getTask(this.editingTaskId);
@@ -572,13 +608,12 @@ class TaskModalController {
         }
 
         const task = {
-            id: this.editingTaskId || Date.now(),
+            id: this.editingTaskId || this.pendingTaskId || Date.now(),
             name,
             type,
             source,
             progress,
             startTime: starttime,
-            starttime: starttime,
             deadline,
             completedAt: completedAtInput || null,
             estimatedHours,
@@ -606,6 +641,12 @@ class TaskModalController {
         // 若任务已完成，则将所有节点标记为已完成
         if (task.completed && task.nodes) {
             task.nodes.forEach((n) => (n.completed = true));
+        }
+
+        // 新上传的图片带上真实尺寸（替换旧图时一并覆盖）
+        if (this.imageChanged && this.currentImagePath && this.imageSize) {
+            task.w = this.imageSize.w;
+            task.h = this.imageSize.h;
         }
 
         return task;
@@ -910,12 +951,12 @@ class TaskModalController {
         const list = Array.isArray(tasks) ? [...tasks] : [];
         const filtered = list.filter((t) => t && t.id !== excludeId);
         filtered.sort((a, b) => {
-            const dA = a.deadline ? new Date(a.deadline).getTime() : 0;
-            const dB = b.deadline ? new Date(b.deadline).getTime() : 0;
+            const dA = a.deadline ? window.taskTime.parseOrInvalid(a.deadline).getTime() : 0;
+            const dB = b.deadline ? window.taskTime.parseOrInvalid(b.deadline).getTime() : 0;
             if (dA !== dB) return dB - dA; // 截止日期倒序
             const sA = a.startTime || a.starttime || a.startDate || "";
             const sB = b.startTime || b.starttime || b.startDate || "";
-            return (new Date(sB).getTime() || 0) - (new Date(sA).getTime() || 0);
+            return (window.taskTime.parseOrInvalid(sB).getTime() || 0) - (window.taskTime.parseOrInvalid(sA).getTime() || 0);
         });
         return filtered;
     }
@@ -988,13 +1029,14 @@ class TaskModalController {
                         }
                     }
                 }
-                const computed = pid ? this.computeAutoStartTime(pid, bufferToUse) : null;
+                const editingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
+                const computed = pid ? this.computeAutoStartTime(pid, bufferToUse, editingTask) : null;
                 if (computed) startInput.value = computed;
                 const lock = !!pid; // 无前序时允许手动编辑
                 startInput.readOnly = lock;
                 startInput.classList.toggle("bg-stone-50", lock);
                 // 更新建议截止与建议工期提示
-                try { this.updateDeadlineSuggestion(); } catch (e) { /* ignore */ }
+                this.updateDeadlineSuggestion();
                 this.syncDeadlineGuards();
             } else {
                 startInput.readOnly = false;
@@ -1005,51 +1047,59 @@ class TaskModalController {
         applyAuto();
 
         // 更新选择按钮的视觉高亮 (使用 dep-selected CSS 类)
-        try {
-            const elNone = document.querySelector('[data-testid="dep-none"]');
-            const elLine = document.querySelector('[data-testid="dep-line"]');
-            const selClass = "dep-selected";
-            if (elNone) elNone.classList.remove(selClass);
-            if (elLine) elLine.classList.remove(selClass);
-            if (isLine) {
-                if (elLine) elLine.classList.add(selClass);
-            } else {
-                if (elNone) elNone.classList.add(selClass);
-            }
-        } catch (e) { /* ignore */ }
+                const elNone = document.querySelector('[data-testid="dep-none"]');
+        const elLine = document.querySelector('[data-testid="dep-line"]');
+        const selClass = "dep-selected";
+        if (elNone) elNone.classList.remove(selClass);
+        if (elLine) elLine.classList.remove(selClass);
+        if (isLine) {
+            if (elLine) elLine.classList.add(selClass);
+        } else {
+            if (elNone) elNone.classList.add(selClass);
+        }
     }
 
     // ═══════════════════════════════════════
     // 自动计算开始时间
     // 对标 app.js computeAutoStartTime
     // ═══════════════════════════════════════
-    computeAutoStartTime(predecessorId, bufferDays = 1) {
+    computeAutoStartTime(predecessorId, bufferDays = 1, childTask = null) {
         const tasks = this.dataSource.getTasks ? this.dataSource.getTasks() : [];
         const prev = tasks.find((t) => t.id === predecessorId);
         if (!prev) return null;
         const endBase = prev.completedAt || prev.deadline;
         if (!endBase) return null;
-        let base = new Date(endBase);
+        let base = window.taskTime.parseOrInvalid(endBase);
         if (Number.isNaN(base.getTime())) return null;
 
-        // 若前序任务尚未完成且其 deadline 已过，则以"今日"为基准
-        const today = new Date();
-        const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        // 若前序任务尚未完成且其 deadline 已过，则以"今日"为基准，但保留 deadline 的时分
+        const todayDate = window.taskTime.today();
         if (!prev.completedAt && prev.deadline) {
-            const dl = new Date(prev.deadline);
+            const dl = window.taskTime.parseOrInvalid(prev.deadline);
             if (!Number.isNaN(dl.getTime()) && dl < todayDate) {
-                const newBase = new Date(todayDate.getTime());
-                newBase.setHours(dl.getHours(), dl.getMinutes(), dl.getSeconds() || 0, 0);
-                base = newBase;
+                const dp = window.taskTime.parts(dl);
+                const tp = window.taskTime.parts(todayDate);
+                base = window.taskTime.make(tp.year, tp.month, tp.day, dp.hour, dp.minute, dp.second);
             }
         }
 
         // bufferDays 语义: -1 => 当天, 0 => 次日, 1 => 后二日
         const rawProvided = Number.isFinite(Number(bufferDays)) ? Math.round(Number(bufferDays)) : null;
         const raw = rawProvided === null ? 1 : Math.max(rawProvided, -1);
-        const addDays = raw + 1;
-        base.setDate(base.getDate() + addDays);
-        return this.formatDateTimeLocal(base);
+        base.setDate(base.getDate() + raw + 1);
+
+        // 链式重排只决定「从哪一天开始」，不重新决定「几点开始」。
+        // 时分优先级：子任务自己已有的 → 前序基准的 → 纯日期
+        const childRaw = childTask ? childTask.startTime || childTask.starttime : "";
+        let tod = null;
+        if (childRaw && window.taskTime.hasExplicitTime(childRaw)) tod = window.taskTime.parts(childRaw);
+        else if (window.taskTime.hasExplicitTime(endBase)) tod = window.taskTime.parts(base);
+
+        if (!tod) return window.taskTime.formatDate(base);
+        const bp = window.taskTime.parts(base);
+        return window.taskTime.formatForStorage(
+            window.taskTime.make(bp.year, bp.month, bp.day, tod.hour, tod.minute, tod.second)
+        );
     }
 
     // ═══════════════════════════════════════
@@ -1061,22 +1111,20 @@ class TaskModalController {
         const startInput = document.getElementById("task-starttime");
         const daysInput = document.getElementById("task-estimated-days");
         const deadlineInput = document.getElementById("task-deadline");
-        const autoCalcEndEl = document.getElementById("task-auto-calc-end");
         if (!startInput || !daysInput || !deadlineInput) return;
-        if (autoCalcEndEl && autoCalcEndEl.checked) return; // 统计数据计算优先
 
         const days = parseInt(daysInput.value);
         const startVal = startInput.value;
         if (!Number.isFinite(days) || days < 0 || !startVal) return;
 
-        const start = new Date(startVal);
+        const start = window.taskTime.parseOrInvalid(startVal);
         if (isNaN(start.getTime())) return;
 
-        const existingDeadline = deadlineInput.value ? new Date(deadlineInput.value) : null;
+        const existingDeadline = deadlineInput.value ? window.taskTime.parseOrInvalid(deadlineInput.value) : null;
         const timeSource =
             existingDeadline && !isNaN(existingDeadline.getTime()) ? existingDeadline : start;
 
-        const end = new Date(start);
+        const end = window.taskTime.parseOrInvalid(start);
         end.setDate(end.getDate() + days);
         end.setHours(timeSource.getHours(), timeSource.getMinutes(), 0, 0);
         deadlineInput.value = this.formatDateTimeLocal(end);
@@ -1094,8 +1142,8 @@ class TaskModalController {
         const deadlineVal = deadlineInput.value;
         if (!startVal || !deadlineVal) return;
 
-        const start = new Date(startVal);
-        const end = new Date(deadlineVal);
+        const start = window.taskTime.parseOrInvalid(startVal);
+        const end = window.taskTime.parseOrInvalid(deadlineVal);
         if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
 
         const startDateOnlyUtc = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
@@ -1109,8 +1157,8 @@ class TaskModalController {
     // 对标 app.js syncDeadlineGuards / isDeadlineBeforeStart / setDeadlineValidationState
     // ═══════════════════════════════════════
     isDeadlineBeforeStart(startVal, deadlineVal) {
-        const start = startVal ? new Date(startVal) : null;
-        const end = deadlineVal ? new Date(deadlineVal) : null;
+        const start = startVal ? window.taskTime.parseOrInvalid(startVal) : null;
+        const end = deadlineVal ? window.taskTime.parseOrInvalid(deadlineVal) : null;
         if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
             return false;
         }
@@ -1175,6 +1223,8 @@ class TaskModalController {
         const hours = parseInt(hoursInput.value) || 8;
         const type = typeSel ? typeSel.value : null;
         const MIN_SAMPLES_FOR_SUGGESTION = 3;
+        // 分位数需要更多样本才有意义（n<4 时 P25 与 P50 会重合）
+        const MIN_SAMPLES_FOR_QUANTILE = 4;
 
         // 计算并显示预计工期 (优先使用实际开始时间)
         const days = this.computeSuggestedRequireDays(preferredStart, hours, type);
@@ -1183,7 +1233,7 @@ class TaskModalController {
         // 格式化建议截止日期
         let autoEndPretty = null;
         if (autoEndRaw) {
-            const dt = new Date(autoEndRaw);
+            const dt = window.taskTime.parseOrInvalid(autoEndRaw);
             if (!Number.isNaN(dt.getTime())) {
                 autoEndPretty = `${dt.getFullYear()}年${dt.getMonth() + 1}月${dt.getDate()}日`;
             }
@@ -1207,17 +1257,17 @@ class TaskModalController {
         if (deadlineText) parts.push(deadlineText);
         suggEl.textContent = parts.join('；');
 
-        // 计算并显示历史平均工时
+        // 仅显示参考工时（完整的分位 / 价格 / 费率分析见左侧「工时稿价分析」面板）
         const hoursSuggEl = document.getElementById("task-hours-suggestion");
         if (hoursSuggEl) {
             const stats = this.getTypeWeightedStats(type);
-            const hasEnough = stats && Number.isFinite(stats.sampleCount) && stats.sampleCount >= MIN_SAMPLES_FOR_SUGGESTION;
-            const avgHours = hasEnough && Number.isFinite(stats.avgCompletedHours) ? stats.avgCompletedHours : null;
-            if (avgHours === null) {
-                hoursSuggEl.textContent = `历史平均工时 x h`;
+            const n = stats && Number.isFinite(stats.quantileSampleCount) ? stats.quantileSampleCount : 0;
+            const round1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
+            if (n < MIN_SAMPLES_FOR_QUANTILE) {
+                hoursSuggEl.textContent = `参考工时 x（数据积累中，已有 ${n} 单）`;
             } else {
-                const rounded = Math.round(avgHours * 10) / 10;
-                hoursSuggEl.textContent = `历史平均工时 ${rounded} h`;
+                hoursSuggEl.textContent =
+                    `参考工时 ${round1(stats.hoursP25)} ~ ${round1(stats.hoursP75)} h（典型 ${round1(stats.hoursP50)} h）`;
             }
         }
 
@@ -1239,6 +1289,7 @@ class TaskModalController {
         const fillBase = isUrgentA ? actualStartVal : startVal;
         const autoEndForFill = fillBase ? this.computeAutoDeadline(fillBase, hours, type) : null;
         if (autoCalcEndEl && autoCalcEndEl.checked && fillBase && autoEndForFill) {
+            this.deadlineManualOverride = false;
             if (deadlineEl) deadlineEl.value = autoEndForFill;
             this.syncDeadlineToEstimatedDays();
         }
@@ -1267,6 +1318,7 @@ class TaskModalController {
                     avgDailyHours: Number.isFinite(entry.avgDailyHours) ? entry.avgDailyHours : agg.avgDailyHours,
                     avgRequireDays: Number.isFinite(entry.avgRequireDays) ? entry.avgRequireDays : agg.avgRequireDays,
                     avgCompletedHours: Number.isFinite(entry.avgCompletedHours) ? entry.avgCompletedHours : agg.avgCompletedHours,
+                    ...this._computeQuantileStats(entry.samples),
                     sampleCount: entry.sampleCount || agg.sampleCount || entry.samples.length || 0,
                 };
             }
@@ -1303,6 +1355,77 @@ class TaskModalController {
         };
     }
 
+    /**
+     * 时间衰减加权分位数：按值升序累积权重，取首次达到 q*W 的样本值。
+     * 权重 w = 0.5^(距今 / 半衰期 365 天) —— 委托约半年到一年开一次，故半衰期取一年。
+     */
+    _weightedQuantile(pairs, q) {
+        const sorted = (Array.isArray(pairs) ? pairs : [])
+            .slice()
+            .sort((a, b) => a.value - b.value);
+        let total = 0;
+        sorted.forEach((p) => { total += p.weight; });
+        if (total <= 0) return null;
+        let acc = 0;
+        for (const p of sorted) {
+            acc += p.weight;
+            if (acc >= q * total - 1e-9) return p.value;
+        }
+        return sorted.length ? sorted[sorted.length - 1].value : null;
+    }
+
+    /**
+     * 近期体感统计：参考工时 / 参考价格 / 费率。
+     * 费率由「中位价格 ÷ 中位工时」反推，保证 价格 = 工时 × 费率 恒等自洽。
+     */
+    _computeQuantileStats(samples) {
+        const empty = {
+            hoursP25: null, hoursP375: null, hoursP50: null, hoursP75: null,
+            priceP25: null, priceP375: null, priceP50: null, priceP75: null,
+            rate: null, rateCheck: null,
+            quantileSampleCount: 0, pricedSampleCount: 0,
+        };
+        const now = Date.now();
+        const rows = [];
+        (Array.isArray(samples) ? samples : []).forEach((s) => {
+            if (!s) return;
+            const hours = Number(s.hours);
+            if (!Number.isFinite(hours) || hours <= 0) return;
+            const endMs = window.taskTime.parseOrInvalid(s.completedAt).getTime();
+            const ageDays = Number.isFinite(endMs)
+                ? Math.max(0, (now - endMs) / 86400000)
+                : 0;
+            const payment = Number(s.payment);
+            rows.push({
+                hours,
+                weight: Math.pow(0.5, ageDays / this.statisticsHalfLifeDays),
+                payment: Number.isFinite(payment) && payment > 0 ? payment : null,
+            });
+        });
+        if (rows.length === 0) return empty;
+        const priced = rows.filter((r) => r.payment !== null);
+        const hoursPairs = rows.map((r) => ({ value: r.hours, weight: r.weight }));
+        const pricePairs = priced.map((r) => ({ value: r.payment, weight: r.weight }));
+        const hoursP25 = this._weightedQuantile(hoursPairs, 0.25);
+        const hoursP375 = this._weightedQuantile(hoursPairs, 0.375);
+        const hoursP50 = this._weightedQuantile(hoursPairs, 0.5);
+        const hoursP75 = this._weightedQuantile(hoursPairs, 0.75);
+        const priceP25 = this._weightedQuantile(pricePairs, 0.25);
+        const priceP375 = this._weightedQuantile(pricePairs, 0.375);
+        const priceP50 = this._weightedQuantile(pricePairs, 0.5);
+        const priceP75 = this._weightedQuantile(pricePairs, 0.75);
+        return {
+            hoursP25, hoursP375, hoursP50, hoursP75,
+            priceP25, priceP375, priceP50, priceP75,
+            rate: hoursP50 && priceP50 ? priceP50 / hoursP50 : null,
+            // 交叉校验：单均时薪的加权中位数；与 rate 偏差过大说明价格与工时脱钩
+            rateCheck: this._weightedQuantile(
+                priced.map((r) => ({ value: r.payment / r.hours, weight: r.weight })), 0.5),
+            quantileSampleCount: rows.length,
+            pricedSampleCount: priced.length,
+        };
+    }
+
     /** 从已完成任务动态计算加权统计 */
     _computeWeightedStatsFromTasks(taskType) {
         if (!this.dataSource.getTasks) return { sampleCount: 0 };
@@ -1310,18 +1433,19 @@ class TaskModalController {
 
         const completed = tasks.filter((t) =>
             t && t.completed && t.completedAt && t.type === taskType
-        ).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+        ).sort((a, b) => window.taskTime.parseOrInvalid(b.completedAt) - window.taskTime.parseOrInvalid(a.completedAt))
             .slice(0, 10);
 
         let sumDaily = 0, sumDays = 0, sumHours = 0, weightSum = 0;
+        const collected = [];
 
         completed.forEach((t, idx) => {
             const start = t.actualStartTime || t.startTime || t.starttime || t.startDate || t.deadline;
             const end = t.completedAt;
             if (!start || !end) return;
 
-            const s = new Date(start);
-            const e = new Date(end);
+            const s = window.taskTime.parseOrInvalid(start);
+            const e = window.taskTime.parseOrInvalid(end);
             if (isNaN(s.getTime()) || isNaN(e.getTime())) return;
 
             const days = Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)));
@@ -1335,6 +1459,7 @@ class TaskModalController {
             sumDays += days * weight;
             sumHours += hours * weight;
             weightSum += weight;
+            collected.push({ hours, payment: Number(t.payment), completedAt: t.completedAt });
         });
 
         if (weightSum === 0) return { sampleCount: 0 };
@@ -1342,6 +1467,7 @@ class TaskModalController {
             avgDailyHours: sumDaily / weightSum,
             avgRequireDays: sumDays / weightSum,
             avgCompletedHours: sumHours / weightSum,
+            ...this._computeQuantileStats(collected),
             sampleCount: completed.length,
         };
     }
@@ -1352,7 +1478,7 @@ class TaskModalController {
 
         const completed = tasks
             .filter((t) => t && t.completed && t.completedAt && t.type === taskType)
-            .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+            .sort((a, b) => window.taskTime.parseOrInvalid(b.completedAt) - window.taskTime.parseOrInvalid(a.completedAt))
             .slice(0, 10);
 
         let sum = 0, weightSum = 0, count = 0;
@@ -1366,8 +1492,8 @@ class TaskModalController {
 
             // 取最早开始的后继
             successors.sort((a, b) => {
-                const aStart = new Date(a.actualStartTime || a.startTime || a.starttime || a.startDate).getTime() || 0;
-                const bStart = new Date(b.actualStartTime || b.startTime || b.starttime || b.startDate).getTime() || 0;
+                const aStart = window.taskTime.parseOrInvalid(a.actualStartTime || a.startTime || a.starttime || a.startDate).getTime() || 0;
+                const bStart = window.taskTime.parseOrInvalid(b.actualStartTime || b.startTime || b.starttime || b.startDate).getTime() || 0;
                 return aStart - bStart;
             });
             const succ = successors[0];
@@ -1375,8 +1501,8 @@ class TaskModalController {
             const endRaw = t.completedAt;
             if (!sTimeRaw || !endRaw) return;
 
-            const sTime = new Date(sTimeRaw);
-            const end = new Date(endRaw);
+            const sTime = window.taskTime.parseOrInvalid(sTimeRaw);
+            const end = window.taskTime.parseOrInvalid(endRaw);
             if (Number.isNaN(sTime.getTime()) || Number.isNaN(end.getTime())) return;
 
             const days = Math.max(0, Math.ceil((sTime - end) / (1000 * 60 * 60 * 24)));
@@ -1392,7 +1518,7 @@ class TaskModalController {
 
     computeSuggestedRequireDays(startTime, estimatedHours, taskType) {
         if (!startTime) return null;
-        const start = new Date(startTime);
+        const start = window.taskTime.parseOrInvalid(startTime);
         if (Number.isNaN(start.getTime())) return null;
 
         const stats = this.getTypeWeightedStats(taskType);
@@ -1413,7 +1539,7 @@ class TaskModalController {
 
     computeAutoDeadline(startTime, estimatedHours, taskType) {
         if (!startTime) return null;
-        const start = new Date(startTime);
+        const start = window.taskTime.parseOrInvalid(startTime);
         if (Number.isNaN(start.getTime())) return null;
 
         const stats = this.getTypeWeightedStats(taskType);
@@ -1431,10 +1557,12 @@ class TaskModalController {
         if (daysByHours === null && daysByHistory === null) return null;
         const requireDays = Math.max(daysByHours || 0, daysByHistory || 0, 1);
 
-        const end = new Date(start);
-        end.setDate(end.getDate() + requireDays);
-        end.setHours(23, 59, 0, 0);
-        return this.formatDateTimeLocal(end);
+        // 默认截止时刻就是当天 23:59：没手动写截止时间时按「当天结束」算。
+        // 按小时交付的平台（米画师等）由用户手动填具体时刻，不走这里。
+        // 「N 天后」按访问者本地日历算，结果转成 ISO UTC 存储。与 app.js 保持一致。
+        const time = window.taskTime;
+        const p = time.parts(start);
+        return time.formatForStorage(time.make(p.year, p.month, p.day + requireDays, 23, 59, 0));
     }
 
     // ═══════════════════════════════════════
@@ -1533,7 +1661,7 @@ class TaskModalController {
         if (empty) empty.style.display = "none";
         const fmt = (v) => {
             if (!v) return "";
-            const d = new Date(v);
+            const d = window.taskTime.parseOrInvalid(v);
             return isNaN(d.getTime()) ? "" :
                 `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
         };
@@ -1613,14 +1741,14 @@ class TaskModalController {
             return;
         }
         // 验证：结束时间必须晚于开始时间
-        if (new Date(resumedAt) <= new Date(pausedAt)) {
+        if (window.taskTime.parseOrInvalid(resumedAt) <= window.taskTime.parseOrInvalid(pausedAt)) {
             if (errEl) { errEl.textContent = "暂停结束时间必须晚于暂停开始时间"; errEl.classList.remove("hidden"); }
             return;
         }
         if (errEl) errEl.classList.add("hidden");
         const record = {
-            pausedAt: new Date(pausedAt).toISOString(),
-            resumedAt: new Date(resumedAt).toISOString(),
+            pausedAt: window.taskTime.parseOrInvalid(pausedAt).toISOString(),
+            resumedAt: window.taskTime.parseOrInvalid(resumedAt).toISOString(),
         };
         if (!this.tempPauseHistory) this.tempPauseHistory = [];
         if (this.editingPauseId !== null) {
@@ -1634,7 +1762,7 @@ class TaskModalController {
 
     // ═══════════════════════════════════════
     // 图片上传
-    // 对标 app.js bindImageUploadEvents
+    // 选中文件 → 立即上传到 /upload-image → 拿回 pic/xxx.png 与宽高
     // ═══════════════════════════════════════
     bindImageUploadEvents() {
         const input = document.getElementById("task-image");
@@ -1642,20 +1770,74 @@ class TaskModalController {
 
         input.addEventListener("change", (e) => {
             const file = e.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                this.currentImageData = ev.target.result;
-                this.imageChanged = true;
-                const uploadArea = document.getElementById("image-upload-area");
-                if (uploadArea) uploadArea.dataset.cleared = "false";
-                this.showImagePreview(this.currentImageData);
-            };
-            reader.readAsDataURL(file);
+            if (file) this._uploadImage(file);
         });
 
         document.getElementById("upload-placeholder")?.addEventListener("click", () => input.click());
+        // 已有预览时点击预览区域也能重新选图（按钮除外）
+        document.getElementById("image-preview-container")?.addEventListener("click", (e) => {
+            if (e.target.closest("#remove-image")) return;
+            input.click();
+        });
         document.getElementById("remove-image")?.addEventListener("click", () => this.resetImageUpload());
+    }
+
+    /** 上传图片：先用本地 blob 立刻预览，上传成功后换成服务器路径 */
+    async _uploadImage(file) {
+        this._revokePreviewObjectUrl();
+        this._previewObjectUrl = URL.createObjectURL(file);
+        this.showImagePreview(this._previewObjectUrl);
+        this._uploading = true;
+
+        const taskId = this.editingTaskId || this.pendingTaskId || Date.now();
+        try {
+            const form = new FormData();
+            form.append("file", file, file.name);
+            form.append("taskId", String(taskId));
+            const nameEl = document.getElementById("task-name");
+            const taskName = nameEl ? nameEl.value.trim() : "";
+            if (taskName) form.append("taskName", taskName);
+
+            const res = await fetch("/upload-image", { method: "POST", body: form });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+
+            // 换图时先丢掉上一张还没落库的临时图
+            this._discardPendingUpload();
+            this._pendingUploadPath = data.path;
+            this.currentImagePath = data.path;
+            this.imageSize = { w: data.w, h: data.h };
+            this.imageChanged = true;
+            const uploadArea = document.getElementById("image-upload-area");
+            if (uploadArea) uploadArea.dataset.cleared = "false";
+            this.showImagePreview(data.path);
+        } catch (err) {
+            console.warn("图片上传失败", err);
+            this.showMessage("图片上传失败，请重试");
+            this.resetImageUpload();
+        } finally {
+            this._uploading = false;
+            this._revokePreviewObjectUrl();
+        }
+    }
+
+    _revokePreviewObjectUrl() {
+        if (this._previewObjectUrl) {
+            URL.revokeObjectURL(this._previewObjectUrl);
+            this._previewObjectUrl = null;
+        }
+    }
+
+    /** 删除本次弹窗上传、但任务还没保存因而没有任何引用的图片 */
+    _discardPendingUpload() {
+        const path = this._pendingUploadPath;
+        this._pendingUploadPath = null;
+        if (!path) return;
+        fetch("/delete-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path }),
+        }).catch((e) => console.warn("删除临时图片失败（会由回收宽限期兜底）", e));
     }
 
     showImagePreview(src) {
@@ -1664,7 +1846,7 @@ class TaskModalController {
         const placeholder = document.getElementById("upload-placeholder");
 
         if (container && preview && placeholder) {
-            preview.src = src;
+            preview.src = window.taskUtils.resolveImageSrc(src);
             container.classList.remove("hidden");
             placeholder.classList.add("hidden");
         }
@@ -1674,7 +1856,10 @@ class TaskModalController {
         const input = document.getElementById("task-image");
         if (input) input.value = "";
 
-        this.currentImageData = null;
+        this._discardPendingUpload();
+        this._revokePreviewObjectUrl();
+        this.currentImagePath = null;
+        this.imageSize = null;
         this.imageChanged = false;
 
         const uploadArea = document.getElementById("image-upload-area");
@@ -1888,16 +2073,10 @@ class TaskModalController {
         TaskModalController.bindOverlayClose(overlayEl, onClose, matcher);
     }
 
+    /** 存储值 → 输入框显示值（本地时区）。只用于回填表单，不要拿它生成写盘数据 */
     formatDateTimeLocal(dateStr) {
         if (!dateStr) return "";
-        const dt = typeof dateStr === "object" ? dateStr : new Date(dateStr);
-        if (isNaN(dt.getTime())) return "";
-        const Y = dt.getFullYear();
-        const M = String(dt.getMonth() + 1).padStart(2, "0");
-        const D = String(dt.getDate()).padStart(2, "0");
-        const h = String(dt.getHours()).padStart(2, "0");
-        const m = String(dt.getMinutes()).padStart(2, "0");
-        return `${Y}-${M}-${D}T${h}:${m}`;
+        return window.taskTime.formatDateTime(dateStr);
     }
 
     // ═══════════════════════════════════════

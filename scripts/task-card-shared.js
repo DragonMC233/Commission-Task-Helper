@@ -1,15 +1,13 @@
 (() => {
+  // 时间处理统一走 task-time.js（固定 UTC+8）
+  const time = window.taskTime;
+
   const getDaysRemaining = (deadline) => {
     if (!deadline) return null;
-    const now = new Date();
-    const nowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const deadlineDate = new Date(deadline);
-    const deadlineDateOnly = new Date(
-      deadlineDate.getFullYear(),
-      deadlineDate.getMonth(),
-      deadlineDate.getDate()
-    );
-    return Math.ceil((deadlineDateOnly - nowDate) / (1000 * 60 * 60 * 24));
+    const diff = time.daysBetween(time.today(), time.toDateOnly(deadline));
+    if (diff === null) return null;
+    // daysBetween 是「截止日 - 今天」的整天差，向上取整保持原有语义
+    return Math.ceil(diff);
   };
 
   const defaultCalculateDailyTime = (
@@ -33,7 +31,8 @@
   const defaultGetDeadlineStatus = (deadline) => {
     if (!deadline) return null;
     const now = new Date();
-    const deadlineDate = new Date(deadline);
+    const deadlineDate = time.parse(deadline);
+    if (!deadlineDate) return null;
     const diffMs = deadlineDate - now;
     const diffHours = diffMs / (1000 * 60 * 60);
     const daysRemaining = getDaysRemaining(deadline);
@@ -61,6 +60,105 @@
   };
 
   // getIconClassForSource 和 defaultGetNodePresentation 已提取至 task-utils.js
+
+  /**
+   * 收款状态徽章信息（卡片用）
+   */
+  const getPaymentStatusInfo = (t) => {
+    if (!t) return null;
+    if (t.abandoned) return { label: "已废弃", variant: "abandoned" };
+    const contracted = Number(t.payment) || 0;
+    const records = Array.isArray(t.paymentRecords) ? t.paymentRecords : [];
+    const mode = t.paymentMode || "";
+    if (mode === "free") return { label: "免费", variant: "free" };
+    if (!contracted && records.length === 0 && !mode) return null;
+    const received = records
+      .filter((r) => r.type !== "refund")
+      .reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const refunded = records
+      .filter((r) => r.type === "refund")
+      .reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const net = received - refunded;
+    const hasRefund = refunded > 0;
+    const modeLabels = {
+      full_pre: "全款先付",
+      full_post: "全款后付",
+      deposit: "定金+尾款",
+      milestone: "节点付款",
+    };
+    const modeLabel = modeLabels[mode] || "";
+    if (records.length === 0) {
+      return modeLabel ? { label: modeLabel + "·待收", variant: "pending" } : null;
+    }
+    if (received > 0 && net <= 0) return { label: "全额退款", variant: "refunded" };
+    if (contracted > 0 && net >= contracted) {
+      return {
+        label: `¥${net.toFixed(0)} 已全收${hasRefund ? "(含退款)" : ""}`,
+        variant: "paid-full",
+      };
+    }
+    if (net > 0) {
+      return {
+        label: `¥${net.toFixed(0)}/${
+          contracted > 0 ? "¥" + contracted.toFixed(0) : "?"
+        }${hasRefund ? "(含退款)" : ""}`,
+        variant: "paid-partial",
+      };
+    }
+    return { label: "未收款", variant: "pending" };
+  };
+
+  /**
+   * 任务净收入（扣除退款；已废弃任务不计入）
+   */
+  const getTaskNetIncomeForStats = (task) => {
+    if (!task || task.abandoned) return 0;
+    const records = task.paymentRecords;
+    if (!Array.isArray(records) || records.length === 0) {
+      return Number(task.payment) || 0;
+    }
+    return Math.max(
+      0,
+      records.reduce((sum, r) => {
+        const amt = Number(r.amount) || 0;
+        return r.type === "refund" ? sum - amt : sum + amt;
+      }, 0)
+    );
+  };
+
+  /**
+   * 计时 / 暂停按钮（卡片底部）
+   *
+   * options: {
+   *   isRunning: 该任务是否正在计时
+   *   taskTypes: 用于取类型颜色
+   *   getButtonBg: (typeColor) => css 颜色，两个视图的取色算法不同，由调用方注入
+   * }
+   */
+  const getTimerButtonHtml = (task, options = {}) => {
+    if (!task || task.completed) return "";
+    const isRunning = !!options.isRunning;
+    const taskTypes = options.taskTypes || [];
+    const getButtonBg =
+      typeof options.getButtonBg === "function"
+        ? options.getButtonBg
+        : (hex) =>
+            window.taskUtils.computeButtonOklch(hex, { maxL: 0.9 }) || "#6B7280";
+    const type = taskTypes.find((t) => t.id === task.type) || {};
+    const typeColor = type.color || "#95A5A6";
+    const btnBg = getButtonBg(typeColor);
+    const isPaused = !!task.paused;
+    const timerBtn = `<button class="timer-btn text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}" style="background:${btnBg}"><span class="material-icons text-sm mr-2">${getTimerIcon(isRunning)}</span><span class="text-sm font-medium">${getTimerLabel(isRunning, !!task.actualStartTime, isPaused)}</span></button>`;
+    // 暂停/恢复按钮（已完成和废弃不显示）
+    if (task.abandoned) {
+      return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}</div>`;
+    }
+    const pauseIcon = isPaused ? "replay" : "play_disabled";
+    const pauseClass = isPaused ? "pause-btn--paused" : "";
+    const pauseBgStyle = isPaused ? "" : `background:${btnBg};`;
+    const pauseBtn = `<button class="pause-btn ${pauseClass}" data-task-id="${task.id}" data-testid="pause-btn-${task.id}" style="${pauseBgStyle}"><span class="material-icons-round text-sm">${pauseIcon}</span></button>`;
+    return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}${pauseBtn}</div>`;
+  };
 
   const createTaskCardHtml = (task, ctx = {}) => {
     if (!task) return "";
@@ -125,33 +223,8 @@
     const hasNodes = task.nodes && task.nodes.length > 0;
     const hasImage = task.image && String(task.image).trim() !== "";
     const hasPayment = task.payment && task.payment > 0;
-    // 收款状态计算（内联辅助函数）
-    const _getPaymentInfo = (t) => {
-      if (!t) return null;
-      if (t.abandoned) return { label: '已废弃', variant: 'abandoned' };
-      const contracted = Number(t.payment) || 0;
-      const records = Array.isArray(t.paymentRecords) ? t.paymentRecords : [];
-      const mode = t.paymentMode || '';
-      if (mode === 'free') return { label: '免费', variant: 'free' };
-      if (!contracted && records.length === 0 && !mode) return null;
-      const received = records.filter(r => r.type !== 'refund').reduce((s, r) => s + (Number(r.amount)||0), 0);
-      const refunded = records.filter(r => r.type === 'refund').reduce((s, r) => s + (Number(r.amount)||0), 0);
-      const net = received - refunded;
-      const hasRefund = refunded > 0;
-      const modeLabels = { full_pre: '全款先付', full_post: '全款后付', deposit: '定金+尾款', milestone: '节点付款' };
-      const modeLabel = modeLabels[mode] || '';
-      if (records.length === 0) return modeLabel ? { label: modeLabel + '·待收', variant: 'pending' } : null;
-      if (received > 0 && net <= 0) return { label: '全额退款', variant: 'refunded' };
-      if (contracted > 0 && net >= contracted) return { label: `¥${net.toFixed(0)} 已全收${hasRefund ? '(含退款)' : ''}`, variant: 'paid-full' };
-      if (net > 0) return { label: `¥${net.toFixed(0)}/${contracted > 0 ? '¥'+contracted.toFixed(0) : '?'}${hasRefund ? '(含退款)' : ''}`, variant: 'paid-partial' };
-      return { label: '未收款', variant: 'pending' };
-    };
-    const paymentInfo = _getPaymentInfo(task);
-    const netIncome = (() => {
-      const records = task.paymentRecords;
-      if (!Array.isArray(records) || records.length === 0) return Number(task.payment) || 0;
-      return Math.max(0, records.reduce((sum, r) => r.type === 'refund' ? sum - (Number(r.amount)||0) : sum + (Number(r.amount)||0), 0));
-    })();
+    const paymentInfo = getPaymentStatusInfo(task);
+    const netIncome = getTaskNetIncomeForStats(task);
     const hourlyRate = netIncome > 0
       ? task.completed
         ? task.actualHours > 0
@@ -172,14 +245,10 @@
     const outerInlineStyle = `background: transparent; color: #1f2937;${showingRecycleBin ? '' : ' overflow: hidden;'}`;
     const bodyOverflowClass = showingRecycleBin ? '' : 'overflow-hidden';
 
-    // normalize image src for pages served under subpaths (BarView)
-    let imgSrc = task.image;
-    if (typeof imgSrc === 'string') {
-      // convert './recyclepic/..' or 'recyclepic/..' -> '/recyclepic/...', keep absolute or http(s) as-is
-      if (/^\.?\/?(pic|recyclepic)\//.test(imgSrc) && !imgSrc.startsWith('/') && !/^https?:\/\//.test(imgSrc)) {
-        imgSrc = '/' + imgSrc.replace(/^\.?\/*/, '');
-      }
-    }
+    // 图片路径归一化：数据存相对路径（pic/x.png），页面有 base href 时必须转根绝对路径
+    const imgSrc = window.taskUtils
+      ? window.taskUtils.resolveImageSrc(task.image)
+      : task.image;
 
     return `
             <div class="task-card ${
@@ -376,5 +445,199 @@
         `;
   };
 
-  window.taskCardShared = { createTaskCardHtml };
+  // ═══════════════════════════════════════
+  // 计时器（任务卡片上的秒表按钮）
+  // 状态机与暂停/恢复的数据变更放在这里，MainView 与 BarView 共用，
+  // 两个视图只负责各自的按钮 HTML、结束计时对话框与刷新回调。
+  // ═══════════════════════════════════════
+
+  const getTimerIcon = (running) => (running ? "stop" : "timer");
+
+  const getTimerLabel = (running, hasActualStart = false, paused = false) => {
+    if (running) return "结束画画计时";
+    if (paused) return "继续委托并计时";
+    return hasActualStart ? "开始画画计时" : "开始首次画画计时";
+  };
+
+  /** 计时状态机：同一时刻只允许一个任务在计时 */
+  class TaskTimer {
+    constructor(options = {}) {
+      this.now = options.now || (() => Date.now());
+      this.taskId = null;
+      this.startTime = null;
+      this.interval = null;
+    }
+
+    /** 当前正在计时的任务 id，没有则为 null */
+    get runningTaskId() {
+      return this.interval !== null ? this.taskId : null;
+    }
+
+    isRunning(taskId) {
+      return this.taskId === taskId && this.interval !== null;
+    }
+
+    /** 开始计时；已有计时在进行时返回 false */
+    start(taskId) {
+      if (this.interval !== null) return false;
+      this.taskId = taskId;
+      this.startTime = this.now();
+      this.interval = setInterval(() => {}, 1000);
+      return true;
+    }
+
+    /** 结束计时，返回本次小时数；不在计时则返回 null */
+    stop(taskId) {
+      if (this.taskId !== taskId || this.interval === null) return null;
+      const elapsedMs = this.now() - this.startTime;
+      clearInterval(this.interval);
+      this.interval = null;
+      this.taskId = null;
+      this.startTime = null;
+      return Math.round(elapsedMs / 1000) / 3600;
+    }
+
+    /** 丢弃当前计时（不结算工时），用于页面重新加载 */
+    reset() {
+      if (this.interval !== null) clearInterval(this.interval);
+      this.interval = null;
+      this.taskId = null;
+      this.startTime = null;
+    }
+  }
+
+  /**
+   * 暂停委托（只改任务数据，不碰 UI）
+   *
+   * 首次暂停时记下原始 deadline 作为 pausePreDeadline：恢复时以它为基准外推，
+   * 避免与「暂停实时预览」在同一次暂停上重复外推。
+   */
+  const pauseTaskData = (task, now = new Date()) => {
+    if (!task) return false;
+    if (task.deadline && !task.pausePreDeadline) {
+      task.pausePreDeadline = task.deadline;
+    }
+    task.paused = true;
+    task.pausedAt = now.toISOString();
+    if (!Array.isArray(task.pauseHistory)) task.pauseHistory = [];
+    task.pauseHistory.push({ pausedAt: task.pausedAt });
+    return true;
+  };
+
+  /**
+   * 恢复委托（只改任务数据，不碰 UI），返回本次暂停的毫秒数
+   */
+  const resumeTaskData = (task, now = new Date()) => {
+    if (!task || !task.paused) return null;
+    const pausedAt = time.parse(task.pausedAt);
+    if (!pausedAt) return null;
+    const pausedMs = now.getTime() - pausedAt.getTime();
+    task.totalPausedDays = (task.totalPausedDays || 0) + pausedMs / 86400000;
+    // 以 pausePreDeadline 为基准外推，避免与实时预览双计
+    const baseDeadline = time.parse(task.pausePreDeadline || task.deadline);
+    if (baseDeadline) {
+      task.deadline = time.formatForStorage(new Date(baseDeadline.getTime() + pausedMs));
+    }
+    task.pausePreDeadline = undefined;
+    // 回填本次暂停的恢复时间
+    if (Array.isArray(task.pauseHistory) && task.pauseHistory.length > 0) {
+      const last = task.pauseHistory[task.pauseHistory.length - 1];
+      if (!last.resumedAt) last.resumedAt = now.toISOString();
+    }
+    task.paused = false;
+    task.pausedAt = null;
+    return pausedMs;
+  };
+
+  /**
+   * 计时结束对话框：让用户确认或修改本次工时。
+   *
+   * 只负责 UI，持久化交给调用方在 onConfirm 里做——两个视图保存流程不同，
+   * 但「长什么样、怎么校验输入」必须一致。
+   *
+   * @param {{name: string}} task
+   * @param {number} durationInHours
+   * @param {{onConfirm?: (hours: number) => void|Promise<void>, onCancel?: () => void}} handlers
+   */
+  const showTimerDurationDialog = (task, durationInHours, handlers = {}) => {
+    const onConfirm = handlers.onConfirm;
+    const onCancel = handlers.onCancel || (() => {});
+    const hours = Math.floor(durationInHours);
+    const minutes = Math.round((durationInHours - hours) * 60);
+
+    const dialogEl = document.createElement("div");
+    dialogEl.className = "fixed inset-0 z-50 flex items-center justify-center p-4";
+    dialogEl.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
+    dialogEl.innerHTML = `
+            <div class="bg-white rounded-xl p-6 max-w-sm w-full">
+                <div class="mb-4">
+                    <h3 class="text-lg font-semibold text-stone-800 mb-2">计时结束</h3>
+                    <p class="text-stone-600 mb-3">任务"${task.name}"的计时时长</p>
+                    <div class="flex items-center gap-2">
+                           <input type="number" id="timer-hours" class="w-20 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none" 
+                               value="${hours}" min="0" max="999" data-testid="timer-hours-input">
+                        <span class="text-stone-600">小时</span>
+                           <input type="number" id="timer-minutes" class="w-20 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none" 
+                               value="${minutes}" min="0" max="59" data-testid="timer-minutes-input">
+                        <span class="text-stone-600">分钟</span>
+                    </div>
+                </div>
+                <div class="flex gap-3">
+                    <button class="timer-cancel flex-1 px-4 py-2 border border-stone-300 rounded-lg hover:bg-stone-50 transition-colors" data-testid="timer-cancel-btn">
+                        取消
+                    </button>
+                    <button class="timer-save flex-1 px-4 py-2 btn-save" data-testid="timer-save-btn">
+                      保存
+                    </button>
+                </div>
+            </div>
+        `;
+
+    const close = () => {
+      if (document.body.contains(dialogEl)) document.body.removeChild(dialogEl);
+    };
+
+    document.body.appendChild(dialogEl);
+
+    dialogEl.querySelector(".timer-cancel").addEventListener("click", () => {
+      close();
+      onCancel();
+    });
+
+    dialogEl.querySelector(".timer-save").addEventListener("click", async () => {
+      try {
+        const h = parseFloat(dialogEl.querySelector("#timer-hours").value) || 0;
+        const m = parseFloat(dialogEl.querySelector("#timer-minutes").value) || 0;
+        const totalHours = h + m / 60;
+        if (totalHours > 0 && onConfirm) await onConfirm(totalHours);
+      } catch (err) {
+        console.error("timer dialog confirm error:", err);
+      } finally {
+        close();
+      }
+    });
+
+    dialogEl.addEventListener("click", (e) => {
+      if (e.target === dialogEl) {
+        close();
+        onCancel();
+      }
+    });
+  };
+
+  window.taskCardShared = {
+    createTaskCardHtml,
+    // 卡片数据辅助
+    getPaymentStatusInfo,
+    getTaskNetIncomeForStats,
+    getTimerButtonHtml,
+    // 计时器
+    TaskTimer,
+    getTimerIcon,
+    getTimerLabel,
+    pauseTaskData,
+    resumeTaskData,
+    // 计时结束对话框（两个视图共用）
+    showTimerDurationDialog,
+  };
 })();

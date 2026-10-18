@@ -1,47 +1,11 @@
 //3.1.2
 class TaskManager {
-  // ✅ 初始化横竖屏检测//
-  initOrientationDetection() {
-    const container = document.getElementById("container");
-
-    const checkOrientation = () => {
-      const isLandscapeNow = window.innerWidth > window.innerHeight;
-
-      if (this.isLandscape !== isLandscapeNow) {
-        this.isLandscape = isLandscapeNow;
-
-        // ✅ 在这里添加布局切换
-        if (this.isLandscape) {
-          container.classList.add("landscape-layout");
-          container.classList.remove("portrait-layout");
-        } else {
-          container.classList.add("portrait-layout");
-          container.classList.remove("landscape-layout");
-        }
-
-        // ✅ 重新渲染任务（让 Masonry 或竖屏布局生效）
-        this.renderTasks();
-      }
-    };
-
-    // ✅ 页面加载时立即执行一次
-    checkOrientation();
-
-    // ✅ 监听横竖屏变化
-    window.addEventListener("resize", checkOrientation);
-    window.addEventListener("orientationchange", checkOrientation);
-  }
-
   // 显示任务预览卡片（centered overlay），保留卡片内的编辑功能
   showTaskPreview(taskId) {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task) return;
     // 按需设置全局 opaxxx
-    try {
-      window.opaxxx = 1;
-    } catch (e) {
-      console.warn("设置 window.opaxxx 失败", e);
-    }
+    window.opaxxx = 1;
 
     // 移除已有的覆盖层（若存在）
     const existing = document.getElementById("task-preview-overlay");
@@ -59,13 +23,9 @@ class TaskManager {
     wrapper.innerHTML = this.createTaskCard(task);
 
     // 如果是已完成任务，在预览中强制显示（覆盖 .task-card.completed 的隐藏样式）
-    try {
-      const previewCard = wrapper.querySelector(".task-card");
-      if (previewCard && previewCard.classList.contains("completed")) {
-        previewCard.classList.add("preview-visible");
-      }
-    } catch (e) {
-      /* ignore */
+    const previewCard = wrapper.querySelector(".task-card");
+    if (previewCard && previewCard.classList.contains("completed")) {
+      previewCard.classList.add("preview-visible");
     }
 
     // 追加并显示
@@ -197,6 +157,14 @@ class TaskManager {
     if (!taskCard) return;
     const taskId = parseInt(taskCard.dataset.taskId);
 
+    // 任务图片预览（卡片缩略图；统一用 data-image-src，不再依赖内联 onclick）
+    const taskImage = target.closest(".task-image");
+    if (taskImage) {
+      const src = taskImage.dataset.imageSrc || taskImage.getAttribute("src");
+      if (src) this.showImageModal(src, taskImage.dataset.imageName || "");
+      return;
+    }
+
     // 编辑按钮
     if (target.closest(".edit-btn")) {
       this.showModal(taskId);
@@ -230,6 +198,12 @@ class TaskManager {
     // 恢复按钮（仅在回收站视图显示）
     if (target.closest(".restore-btn")) {
       this.restoreTask(taskId);
+      return;
+    }
+
+    // 废弃 / 恢复任务
+    if (target.closest(".abandon-btn")) {
+      this.toggleAbandoned(taskId);
       return;
     }
 
@@ -320,9 +294,7 @@ class TaskManager {
         if (this._searchPointerDownInside) {
           this._searchPointerDownInside = false;
         } else {
-          try {
-            this._closeSearch();
-          } catch (err) {}
+          this._closeSearch();
         }
       }
     }
@@ -334,11 +306,7 @@ class TaskManager {
       const taskId = tid ? parseInt(tid, 10) : null;
       if (taskId) {
         e.preventDefault();
-        try {
-          this.showTaskPreview(taskId);
-        } catch (err) {
-          console.warn("showTaskPreview error", err);
-        }
+        this.showTaskPreview(taskId);
         return;
       }
     }
@@ -526,11 +494,8 @@ class TaskManager {
     this.confirmDeleteOnRemove = true;
     this.editingTaskId = null;
     this.currentDate = new Date();
-    this.currentImageData = null;
-    this.imageChanged = false;
-    this.currentTimer = null;
-    this.timerTaskId = null;
-    this.timerStartTime = null;
+    // 计时器状态机（与 BarView 共用 scripts/task-card-shared.js 的实现）
+    this.timer = new window.taskCardShared.TaskTimer();
     this.isLandscape = false;
     this.serverOnline = true;
     this._firstMasonryLayout = false; // ✅ 标志首次加载
@@ -541,6 +506,10 @@ class TaskManager {
     this._saveInProgress = null; // 正在进行保存的 Promise
     this.statistics = { version: 1, types: {} };
     this.statisticsMaxSamples = 10;
+    // 时间衰减半衰期（天）：委托约半年到一年开一次，故取一年
+    // 注意：分位数是「取某个具体样本值」的跳跃式统计，权重只能微调排列位置，
+    // 样本量 < 15 时调整本参数几乎不会改变结果 —— 别指望靠它解决「旧数据过时」
+    this.statisticsHalfLifeDays = 365;
     // 统一的 task-list click handler（在 constructor 中绑定引用，init 时只注册一次）
     this._taskListClickHandler = this._onTaskListClick.bind(this);
     // 统一的 task list change handler（用于处理输入框 change 事件）
@@ -589,6 +558,18 @@ class TaskManager {
         : null;
     this.calendarMode =
       savedCalendarMode === "timeline" ? "timeline" : "deadline";
+    // 统计引擎与 BarView 共用同一套实现（scripts/task-statistics.js），
+    // 避免两边各写一遍导致算法分叉
+    this.statsEngine = new window.taskStatistics.StatisticsEngine({
+      getStatistics: () => this.statistics,
+      setStatistics: (stats) => {
+        this.statistics = stats;
+      },
+      getTasks: () => this.tasks,
+      getTypeName: (typeId) => this._getTypeName(typeId),
+      maxSamples: this.statisticsMaxSamples,
+      halfLifeDays: this.statisticsHalfLifeDays,
+    });
   }
 
   getDefaultPresetNodes() {
@@ -931,7 +912,6 @@ class TaskManager {
     return {
       ...clone,
       startTime: startTimeValue,
-      starttime: startTimeValue,
       deadline: clone.deadline || "",
       actualStartTime: actualStartTime || null,
       dependencyType,
@@ -987,6 +967,7 @@ class TaskManager {
       paused, pausedAt, totalPausedDays, pauseHistory,
       // eslint-disable-next-line no-unused-vars
       __duration: _dur, __endDate: _end, __startDate: _start,
+      startTime: _st, starttime: _stt,
       ...rest
     } = normalized;
 
@@ -995,7 +976,8 @@ class TaskManager {
       ...(createdAt !== undefined ? { createdAt } : {}),
       completed,
       startTime: normalized.startTime || "",
-      starttime: normalized.startTime || "",
+      // 老数据里可能还有小写 starttime：有就跟着更新，没有就不凭空造
+      ...(_stt !== undefined ? { starttime: normalized.startTime || "" } : {}),
       actualStartTime,
       deadline: normalized.deadline || "",
       completedAt,
@@ -1044,46 +1026,9 @@ class TaskManager {
     task.completedAt = nextCompleted ? new Date().toISOString() : null;
     return task;
   }
-  formatDateTimeLocal(dateObj) {
-    if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) return "";
-    const Y = dateObj.getFullYear();
-    const M = String(dateObj.getMonth() + 1).padStart(2, "0");
-    const D = String(dateObj.getDate()).padStart(2, "0");
-    const h = String(dateObj.getHours()).padStart(2, "0");
-    const m = String(dateObj.getMinutes()).padStart(2, "0");
-    return `${Y}-${M}-${D}T${h}:${m}`;
-  }
-  computeAutoStartTime(predecessorId, bufferDays = 1) {
+  computeAutoStartTime(predecessorId, bufferDays = 1, childTask = null) {
     const prev = (this.tasks || []).find((t) => t.id === predecessorId);
-    if (!prev) return null;
-    const endBase = prev.completedAt || prev.deadline;
-    if (!endBase) return null;
-    let base = new Date(endBase);
-    if (Number.isNaN(base.getTime())) return null;
-
-    // 若前序任务尚未完成且其 deadline 已过，则以“今日（仅日期）”为基准，以保证后继不会被安排在过去
-    // 注意：仅在 prev.completedAt 不存在且 prev.deadline 可解析并早于今日（日期粒度）时生效
-    const today = new Date();
-    const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    if (!prev.completedAt && prev.deadline) {
-      const dl = new Date(prev.deadline);
-      if (!Number.isNaN(dl.getTime()) && dl < todayDate) {
-        // 使用今日的日期作为基准，但保留原始 deadline 的时分（例如 23:59），以与现有时间粒度保持一致
-        const newBase = new Date(todayDate.getTime());
-        newBase.setHours(dl.getHours(), dl.getMinutes(), dl.getSeconds() || 0, 0);
-        base = newBase;
-      }
-    }
-
-    // 语义：bufferDays 表示“间隔天数”的直观语义
-    // - bufferDays === -1 => 下一项在同一天开始（无缝衔接）
-    // - bufferDays === 0  => 下一项在次日开始
-    // - bufferDays === 1  => 下一项在次次日开始，依此类推
-    const rawProvided = Number.isFinite(Number(bufferDays)) ? Math.round(Number(bufferDays)) : null;
-    const raw = rawProvided === null ? 1 : Math.max(rawProvided, -1);
-    const addDays = raw + 1; // mapping: -1->0, 0->1, 1->2, ...
-    base.setDate(base.getDate() + addDays);
-    return this.formatDateTimeLocal(base);
+    return window.taskChain.computeAutoStartFromPredecessor(prev, bufferDays, childTask);
   }
   // 统计数据处理
   createEmptyStatistics() {
@@ -1093,7 +1038,7 @@ class TaskManager {
   normalizeStatisticsSample(sample) {
     if (!sample || typeof sample !== "object") return null;
     const endRaw = sample.completedAt || sample.completed_at || sample.end;
-    const end = endRaw ? new Date(endRaw) : null;
+    const end = endRaw ? window.taskTime.parseOrInvalid(endRaw) : null;
     if (!end || Number.isNaN(end.getTime())) return null;
     const hours = Number(sample.hours);
     const requireDaysRaw = Number(sample.requireDays);
@@ -1108,6 +1053,8 @@ class TaskManager {
       ? hours / requireDays
       : null;
     if (!hoursValid || !requireDays || !dailyHours) return null;
+    const paymentRaw = Number(sample.payment ?? sample.price ?? sample.amount);
+    const payment = Number.isFinite(paymentRaw) && paymentRaw > 0 ? paymentRaw : 0;
     const sourceTaskId =
       sample.sourceTaskId || sample.source_task_id || sample.sourceTask || null;
     const sourceTaskName =
@@ -1117,46 +1064,31 @@ class TaskManager {
       requireDays,
       dailyHours,
       completedAt: end.toISOString(),
+      // 成交金额：用于计算参考价格与费率；0 表示未记录
+      payment,
       sourceTaskId: sourceTaskId === undefined ? null : sourceTaskId,
       sourceTaskName: sourceTaskName === undefined ? null : sourceTaskName,
     };
   }
   // 计算统计样本的加权平均值
   computeStatisticsAggregates(samples) {
-    if (!Array.isArray(samples) || samples.length === 0) {
-      return {
-        avgDailyHours: null,
-        avgRequireDays: null,
-        avgCompletedHours: null,
-        sampleCount: 0,
-      };
-    }
-    let sumDaily = 0;
-    let sumDays = 0;
-    let sumHours = 0;
-    let weightSum = 0;
-    samples.forEach((s, idx) => {
-      if (!s) return;
-      const weight = 1 / (idx + 1);
-      sumDaily += s.dailyHours * weight;
-      sumDays += s.requireDays * weight;
-      sumHours += s.hours * weight;
-      weightSum += weight;
-    });
-    if (weightSum === 0) {
-      return {
-        avgDailyHours: null,
-        avgRequireDays: null,
-        avgCompletedHours: null,
-        sampleCount: 0,
-      };
-    }
-    return {
-      avgDailyHours: sumDaily / weightSum,
-      avgRequireDays: sumDays / weightSum,
-      avgCompletedHours: sumHours / weightSum,
-      sampleCount: samples.length,
-    };
+    return window.taskStatistics.computeStatisticsAggregates(samples);
+  }
+  // 为样本补齐缺失的成交金额：历史样本可能早于金额统计
+  // 返回值表示是否发生过回填（用于触发写盘）
+  // 返回值表示是否发生过回填（用于触发写盘）
+  backfillSamplePayments(samples) {
+    return window.taskStatistics.backfillSamplePayments(samples, this.tasks);
+  }
+  // 时间衰减加权分位数：按值升序累积权重，取首次达到 q*W 的样本值
+  // 权重 w = 0.5^(距今 / 半衰期)，半衰期见 statisticsHalfLifeDays
+  weightedQuantile(pairs, q) {
+    return window.taskStatistics.weightedQuantile(pairs, q);
+  }
+  // 近期体感统计：参考工时 / 参考价格 / 费率
+  // 费率由「中位价格 ÷ 中位工时」反推，保证 价格 = 工时 × 费率 恒等自洽
+  computeQuantileStats(samples) {
+    return window.taskStatistics.computeQuantileStats(samples, this.statisticsHalfLifeDays);
   }
   // 统计数据标准化
   normalizeStatistics(raw) {
@@ -1164,16 +1096,38 @@ class TaskManager {
     if (!raw || typeof raw !== "object") return stats;
     stats.version = Number.isFinite(raw.version) ? raw.version : 1;
     const types = raw.types && typeof raw.types === "object" ? raw.types : {};
+    let backfilled = false;
     Object.entries(types).forEach(([typeId, entry]) => {
       const samplesRaw = Array.isArray(entry.samples) ? entry.samples : [];
       const normalizedSamples = samplesRaw
         .map((s) => this.normalizeStatisticsSample(s))
         .filter(Boolean)
-        .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+        .sort((a, b) => window.taskTime.parseOrInvalid(b.completedAt) - window.taskTime.parseOrInvalid(a.completedAt))
         .slice(0, this.statisticsMaxSamples);
+      // 回填缺失的 sourceTaskName：历史样本可能由 BarView 生成而未带名称
+      normalizedSamples.forEach((s) => {
+        if (!s.sourceTaskName && s.sourceTaskId != null) {
+          const foundTask = (this.tasks || []).find(
+            (t) => String(t.id) === String(s.sourceTaskId)
+          );
+          if (foundTask && foundTask.name) {
+            s.sourceTaskName = foundTask.name;
+            backfilled = true;
+          }
+        }
+      });
+      // 回填缺失的 payment：历史样本可能早于金额统计
+      if (this.backfillSamplePayments(normalizedSamples)) backfilled = true;
       const agg = this.computeStatisticsAggregates(normalizedSamples);
+      const quant = this.computeQuantileStats(normalizedSamples);
+      // 回填缺失的 typeName：条目本身没有时从任务类型列表查找
+      const resolvedTypeName =
+        entry.typeName !== undefined ? entry.typeName : this._getTypeName(typeId);
+      if (entry.typeName === undefined && resolvedTypeName !== undefined) {
+        backfilled = true;
+      }
       stats.types[typeId] = {
-        ...(entry.typeName !== undefined ? { typeName: entry.typeName } : {}),
+        ...(resolvedTypeName !== undefined ? { typeName: resolvedTypeName } : {}),
         samples: normalizedSamples,
         avgDailyHours: Number.isFinite(entry.avgDailyHours)
           ? entry.avgDailyHours
@@ -1184,11 +1138,13 @@ class TaskManager {
         avgCompletedHours: Number.isFinite(entry.avgCompletedHours)
           ? entry.avgCompletedHours
           : agg.avgCompletedHours,
+        ...quant,
         sampleCount:
           entry.sampleCount || agg.sampleCount || normalizedSamples.length,
         updatedAt: entry.updatedAt || null,
       };
     });
+    if (backfilled) this._statisticsBackfilled = true;
     return stats;
   }
   isStatisticsEmpty(stats) {
@@ -1199,134 +1155,11 @@ class TaskManager {
     const found = (this.taskTypes || []).find((t) => String(t.id) === String(typeId) || t.id === typeId);
     return found ? found.name : undefined;
   }
-  upsertStatisticsSample(taskType, sample) {
-    if (!taskType || !sample) return null;
-    if (!this.statistics || typeof this.statistics !== "object") {
-      this.statistics = this.createEmptyStatistics();
-    }
-    const types = this.statistics.types || {};
-    const existing = types[taskType] || { samples: [] };
-    const samples = Array.isArray(existing.samples) ? [...existing.samples] : [];
-    // 如果 sample 包含源任务 ID，则尝试替换已有同源样本以避免重复
-    const srcId = sample && (sample.sourceTaskId || sample.source_task_id || sample.sourceTask);
-    if (srcId !== null && srcId !== undefined) {
-      const idx = samples.findIndex((s) => s && (s.sourceTaskId || s.source_task_id || s.sourceTask) == srcId);
-      if (idx >= 0) {
-        // 保留已有样本中的名称，若新样本没有提供
-        if (!sample.sourceTaskName) {
-          sample.sourceTaskName = samples[idx]?.sourceTaskName || samples[idx]?.source_task_name || samples[idx]?.name || null;
-        }
-        // 若仍无名称，尝试从当前 tasks 列表查找
-        if (!sample.sourceTaskName) {
-          const foundTask = (this.tasks || []).find((t) => String(t.id) === String(srcId));
-          if (foundTask && foundTask.name) sample.sourceTaskName = foundTask.name;
-        }
-        samples[idx] = sample;
-      } else {
-        // 若新样本没有名称，尝试从当前 tasks 列表查找并填充
-        if (!sample.sourceTaskName) {
-          const foundTask = (this.tasks || []).find((t) => String(t.id) === String(srcId));
-          if (foundTask && foundTask.name) sample.sourceTaskName = foundTask.name;
-        }
-        samples.push(sample);
-      }
-    } else {
-      // 否则直接追加（兼容旧样本）
-      samples.push(sample);
-    }
-    samples.sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    const trimmed = samples.slice(0, this.statisticsMaxSamples);
-    const agg = this.computeStatisticsAggregates(trimmed);
-    const typeName = this._getTypeName(taskType);
-    types[taskType] = {
-      ...(typeName !== undefined ? { typeName } : {}),
-      samples: trimmed,
-      avgDailyHours: agg.avgDailyHours,
-      avgRequireDays: agg.avgRequireDays,
-      avgCompletedHours: agg.avgCompletedHours,
-      sampleCount: agg.sampleCount,
-      updatedAt: new Date().toISOString(),
-    };
-    this.statistics.version = this.statistics.version || 1;
-    this.statistics.types = types;
-    return types[taskType];
-  }
-
   removeStatisticsSample(taskType, sourceTaskId) {
-    if (!taskType || sourceTaskId === null || sourceTaskId === undefined)
-      return null;
-    if (!this.statistics || !this.statistics.types) return null;
-    const entry = this.statistics.types[taskType];
-    if (!entry || !Array.isArray(entry.samples)) return null;
-    const filtered = entry.samples.filter(
-      (s) => (s && (s.sourceTaskId || s.source_task_id || s.sourceTask)) != sourceTaskId
-    );
-    // 如果长度未变，则无删除
-    if (filtered.length === entry.samples.length) return null;
-    filtered.sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-    const trimmed = filtered.slice(0, this.statisticsMaxSamples);
-    const agg = this.computeStatisticsAggregates(trimmed);
-    this.statistics.types[taskType] = {
-      samples: trimmed,
-      avgDailyHours: agg.avgDailyHours,
-      avgRequireDays: agg.avgRequireDays,
-      avgCompletedHours: agg.avgCompletedHours,
-      sampleCount: agg.sampleCount,
-      updatedAt: new Date().toISOString(),
-    };
-    return this.statistics.types[taskType];
+    return this.statsEngine.removeSample(taskType, sourceTaskId);
   }
   extractCompletionSample(task) {
-    if (!task || !task.completed) return null;
-    const endRaw = task.completedAt || task.completed_at;
-    if (!endRaw) return null;
-    const end = new Date(endRaw);
-    if (Number.isNaN(end.getTime())) return null;
-    // 优先使用 actualStartTime（实际开始作画时间），避免将排期等待期计入消耗天数
-    // startTime 仅作 fallback（pauseHistory 记录的是绝对时间戳，与起始点无关，不存在重复扣除问题）
-    const startRaw =
-      task.actualStartTime ||
-      task.startTime ||
-      task.starttime ||
-      task.startDate ||
-      task.deadline;
-    if (!startRaw) return null;
-    const start = new Date(startRaw);
-    if (Number.isNaN(start.getTime())) return null;
-    const hoursCandidates = [
-      task.actualHours,
-      task.completedHours,
-      task.estimatedHours,
-    ];
-    let hours = null;
-    for (const h of hoursCandidates) {
-      if (Number.isFinite(Number(h)) && Number(h) > 0) {
-        hours = Number(h);
-        break;
-      }
-    }
-    if (!hours) return null;
-    // 从 pauseHistory 动态计算已完成的暂停总时长（避免依赖可能过时的 totalPausedDays）
-    const pauseHistory = Array.isArray(task.pauseHistory) ? task.pauseHistory : [];
-    const pausedMs = pauseHistory.reduce((sum, entry) => {
-      if (!entry || !entry.pausedAt || !entry.resumedAt) return sum;
-      const ps = new Date(entry.pausedAt).getTime();
-      const pe = new Date(entry.resumedAt).getTime();
-      const diff = pe - ps;
-      return sum + (diff > 0 ? diff : 0);
-    }, 0);
-    const pausedDays = pausedMs / (1000 * 60 * 60 * 24);
-    const calendarDays = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
-    const requireDays = Math.max(1, Math.ceil(calendarDays - pausedDays));
-    const dailyHours = hours / requireDays;
-    return {
-      hours,
-      requireDays,
-      dailyHours,
-      completedAt: end.toISOString(),
-      sourceTaskId: task.id,
-      sourceTaskName: task.name || task.title || null,
-    };
+    return window.taskStatistics.extractCompletionSample(task);
   }
   rebuildStatisticsFromTasks(tasks) {
     const stats = this.createEmptyStatistics();
@@ -1342,9 +1175,11 @@ class TaskManager {
     Object.entries(stats.types).forEach(([typeId, entry]) => {
       entry.samples = (entry.samples || [])
         .filter(Boolean)
-        .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+        .sort((a, b) => window.taskTime.parseOrInvalid(b.completedAt) - window.taskTime.parseOrInvalid(a.completedAt))
         .slice(0, this.statisticsMaxSamples);
+      this.backfillSamplePayments(entry.samples);
       const agg = this.computeStatisticsAggregates(entry.samples);
+      const quant = this.computeQuantileStats(entry.samples);
       const typeName = this._getTypeName(typeId);
       stats.types[typeId] = {
         ...(typeName !== undefined ? { typeName } : {}),
@@ -1352,6 +1187,7 @@ class TaskManager {
         avgDailyHours: agg.avgDailyHours,
         avgRequireDays: agg.avgRequireDays,
         avgCompletedHours: agg.avgCompletedHours,
+        ...quant,
         sampleCount: agg.sampleCount,
         updatedAt: new Date().toISOString(),
       };
@@ -1359,9 +1195,7 @@ class TaskManager {
     return stats;
   }
   recordCompletionStatistics(task) {
-    const sample = this.extractCompletionSample(task);
-    if (!sample || !task || !task.type) return null;
-    return this.upsertStatisticsSample(task.type, sample);
+    return this.statsEngine.recordCompletion(task);
   }
   computeWeightedStatsFromTasks(taskType) {
     const completed = (this.tasks || [])
@@ -1373,18 +1207,19 @@ class TaskManager {
           t.type === taskType &&
           (t.startTime || t.starttime || t.startDate || t.actualStartTime)
       )
-      .sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt))
+      .sort((a, b) => window.taskTime.parseOrInvalid(b.completedAt) - window.taskTime.parseOrInvalid(a.completedAt))
       .slice(0, 10);
     let sumDaily = 0;
     let sumDays = 0;
     let sumHours = 0;
     let weightSum = 0;
+    const collected = [];
     completed.forEach((t, idx) => {
       const start =
         t.actualStartTime || t.startTime || t.starttime || t.startDate || t.deadline;
       const end = t.completedAt;
-      const s = new Date(start);
-      const e = new Date(end);
+      const s = window.taskTime.parseOrInvalid(start);
+      const e = window.taskTime.parseOrInvalid(end);
       if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return;
       const days = Math.max(1, Math.ceil((e - s) / (1000 * 60 * 60 * 24)));
       const hours = Number.isFinite(Number(t.actualHours))
@@ -1399,6 +1234,11 @@ class TaskManager {
       sumDays += days * weight;
       sumHours += hours * weight;
       weightSum += weight;
+      collected.push({
+        hours,
+        payment: Number(t.payment),
+        completedAt: t.completedAt,
+      });
     });
     if (weightSum === 0) {
       return {
@@ -1412,6 +1252,7 @@ class TaskManager {
       avgDailyHours: sumDaily / weightSum,
       avgRequireDays: sumDays / weightSum,
       avgCompletedHours: sumHours / weightSum,
+      ...this.computeQuantileStats(collected),
       sampleCount: completed.length,
     };
   }
@@ -1431,6 +1272,7 @@ class TaskManager {
         avgCompletedHours: Number.isFinite(entry.avgCompletedHours)
           ? entry.avgCompletedHours
           : agg.avgCompletedHours,
+        ...this.computeQuantileStats(entry.samples),
         sampleCount:
           entry.sampleCount || agg.sampleCount || entry.samples.length || 0,
       };
@@ -1439,8 +1281,9 @@ class TaskManager {
   }
   computeAutoDeadline(startTime, estimatedHours, taskType) {
     if (!startTime) return null;
-    const start = new Date(startTime);
-    if (Number.isNaN(start.getTime())) return null;
+    const time = window.taskTime;
+    const start = time.parse(startTime);
+    if (!start) return null;
     const stats = this.getTypeWeightedStats(taskType);
     const MIN_SAMPLES_FOR_SUGGESTION = 3;
     const hasEnoughSamples = stats && Number.isFinite(stats.sampleCount) && stats.sampleCount >= MIN_SAMPLES_FOR_SUGGESTION;
@@ -1454,28 +1297,17 @@ class TaskManager {
     // 如果无充足历史也无法由工时/日均推算，返回 null 表示不可自动计算
     if (daysByHours === null && daysByHistory === null) return null;
     const requireDays = Math.max(daysByHours || 0, daysByHistory || 0, 1);
-    const end = new Date(start);
-    end.setDate(end.getDate() + requireDays);
-    end.setHours(23, 59, 0, 0);
-    return this.formatDateTimeLocal(end);
+    // 默认截止时刻就是当天 23:59：用户没有手动写截止时间时，就按「当天结束」算。
+    // 少数按小时交付的平台（米画师等）由用户手动填具体时刻，那种任务不走这里。
+    // 「N 天后」按访问者本地日历算，结果转成 ISO UTC 存储。
+    const p = time.parts(start);
+    return time.formatForStorage(time.make(p.year, p.month, p.day + requireDays, 23, 59, 0));
   }
   getSuccessorTasks(taskId) {
-    return (this.tasks || []).filter(
-      (t) => t && t.dependencyType === "line" && t.lineTaskId === taskId
-    );
+    return window.taskChain.getSuccessorTasks(this.tasks, taskId);
   }
   getChainAncestors(task) {
-    const list = [];
-    const seen = new Set();
-    let cur = task;
-    while (cur && cur.lineTaskId && !seen.has(cur.lineTaskId)) {
-      seen.add(cur.lineTaskId);
-      const parent = (this.tasks || []).find((t) => t.id === cur.lineTaskId);
-      if (!parent) break;
-      list.push(parent);
-      cur = parent;
-    }
-    return list;
+    return window.taskChain.getChainAncestors(this.tasks, task);
   }
   // 检查绑定是否会形成环：若新前序在当前任务的后代链上，则判为循环
   wouldCreateCycle(taskId, newParentId) {
@@ -1495,65 +1327,35 @@ class TaskManager {
   }
   // 将当前任务的所有后继重新绑定到指定的父节点（用于剪切当前任务时保留链路顺序）
   rebindSuccessorsTo(taskId, parentId) {
-    const children = this.getSuccessorTasks(taskId) || [];
-    children.forEach((child) => {
-      child.lineTaskId = parentId;
-    });
-    return children;
+    return window.taskChain.rebindSuccessorsTo(this.tasks, taskId, parentId);
+  }
+  // 是否需要询问「是否加急」：已确认加急(urgentA)或已对当前这组值点过取消，就不再打断
+  _needsAcceleratePrompt(task) {
+    return window.taskChain.needsAcceleratePrompt(task);
   }
   handleAccelerateConflict(task) {
-    // 构建有序前序链 [链头, ..., 紧前任务]（getChainAncestors 返回 [紧前,...,链头]，需 reverse）
-    const orderedPreds = [...this.getChainAncestors(task)].reverse();
-
-    // 根据 actualStartTime 定位分支锚点
-    // urgentA 永远为分支，主链排期保持不变
-    // 找 Q = 最后一个 startTime <= actualStart 的前序
-    //   无 Q              → 独立任务（lineTaskId = null）
-    //   gap <= 7天（含重叠）→ 分支自 Q（同档并行/紧随）
-    //   gap > 7天          → 往前一级（避免分支悬空过长）
-    const BRANCH_GAP_DAYS = 7;
-    let newLineTaskId = null;
-    if (task.actualStartTime) {
-      const actualStart = new Date(task.actualStartTime).getTime();
-      let qIdx = -1;
-      for (let i = orderedPreds.length - 1; i >= 0; i--) {
-        if (new Date(orderedPreds[i].startTime).getTime() <= actualStart) {
-          qIdx = i;
-          break;
-        }
-      }
-      if (qIdx !== -1) {
-        const Q = orderedPreds[qIdx];
-        const gapDays = (actualStart - new Date(Q.deadline).getTime()) / 86400000;
-        if (gapDays <= BRANCH_GAP_DAYS) {
-          newLineTaskId = Q.id;
-        } else {
-          newLineTaskId = qIdx > 0 ? orderedPreds[qIdx - 1].id : null;
-        }
-      }
-      // qIdx === -1: actualStart 早于所有前序 → 独立任务
-    }
+    const chain = window.taskChain;
+    // 记录触发这次询问时的判定依据，用户点取消就把这组值存下来，条件不变就不再问
+    const signature = chain.accelerateSignature(task);
+    // 分支锚点：按 actualStartTime 落地到最贴合的某个前序（规则见 task-chain.js）
+    const { newLineTaskId } = chain.resolveAccelerateAnchor(this.tasks, task);
 
     const message =
       `任务"${task.name}"已实际开始，早于链式计算的开始时间。是否确认加急并调整链顺序？`;
     this.showConfirmDialog(message, () => {
+      const originalLineTaskId = task.lineTaskId;
+      // 先把后继回接到原前序，保证主链不断裂
+      chain.rebindSuccessorsTo(this.tasks, task.id, originalLineTaskId);
       task.urgentA = true;  // 标记为「实际开始加急」，BarView 将以 actualStartTime 为 bar 起点
       task.lineTaskId = newLineTaskId;
       task.dependencyType = newLineTaskId ? "line" : "none";
       // 根据新的前序重新计算开始时间
       if (task.autoSchedule && task.lineTaskId) {
         const prev = (this.tasks || []).find((t) => t.id === task.lineTaskId);
-        const buffer = Number.isFinite(Number(prev?.bufferDays))
-          ? Math.max(-1, Math.round(Number(prev.bufferDays)))
-          : (function () {
-              const stats = prev ? this.getTypeWeightedStats(prev.type) : null;
-              const statDays = stats && stats.avgRequireDays ? Math.round(stats.avgRequireDays) : 1;
-              return Math.max(1, statDays);
-            }).call(this);
-        const nextStart = this.computeAutoStartTime(task.lineTaskId, buffer);
+        const buffer = chain.resolveBufferDays(prev, (type) => this.getTypeWeightedStats(type));
+        const nextStart = this.computeAutoStartTime(task.lineTaskId, buffer, task);
         if (nextStart) {
           task.startTime = nextStart;
-          task.starttime = nextStart;
         }
       }
       if (task.autoCalcEnd && !task.completed) {
@@ -1566,122 +1368,50 @@ class TaskManager {
         );
         if (autoEnd) task.deadline = autoEnd;
       }
+      // 从原前序出发重排被回接过来的后继（纯排期，不再触发加急询问，避免连环弹窗）
+      if (originalLineTaskId) {
+        const prev = (this.tasks || []).find((t) => t.id === originalLineTaskId);
+        if (prev) {
+          chain.reflowChainFrom(this.tasks, prev.id, {
+            computeAutoDeadline: (start, hours, type) => this.computeAutoDeadline(start, hours, type),
+          });
+        }
+      }
       this.saveAllData();
-      this.renderTasks(task.id);
+      this.renderTasks();
       this.renderCalendar();
-    }, { confirmLabel: "确认", confirmClass: "btn-save" });
+    }, {
+      confirmLabel: "确认",
+      confirmClass: "btn-save",
+      onCancel: () => {
+        // 记住「保持现状」这个决定：条件（实际开始/计划开始/前序）不变就不再问
+        task.accelerateDismissedFor = signature;
+        this.saveAllData();
+      },
+    });
   }
   adjustChainFrom(task, visited = new Set(), changed = null) {
-    if (!task || visited.has(task.id)) return;
+    if (!task || visited.has(String(task.id))) return;
     const topLevel = changed === null;
     if (topLevel) changed = new Set();
-    visited.add(task.id);
-    const successors = this.getSuccessorTasks(task.id);
-    if (!successors.length) {
-      if (topLevel) {
-        // if no successors but changes exist, refresh calendar
-        if (changed.size > 0) this.renderCalendar();
-      }
-      return;
-    }
-    const endBase = task.completedAt || task.deadline;
-    const bufferDays = Number.isFinite(Number(task.bufferDays))
-      ? Math.max(-1, Math.round(Number(task.bufferDays)))
-      : (function () {
-          const stats = this.getTypeWeightedStats(task.type);
-          const statDays = stats && stats.avgRequireDays ? Math.round(stats.avgRequireDays) : 1;
-          return Math.max(1, statDays);
-        }).call(this);
-    successors.forEach((child) => {
-      let childChanged = false;
-      if (child.autoSchedule) {
-        const nextStart = endBase
-          ? this.computeAutoStartTime(task.id, bufferDays)
-          : child.startTime || child.starttime;
-        if (nextStart) {
-          if (child.startTime !== nextStart) {
-            child.startTime = nextStart;
-            child.starttime = nextStart;
-            childChanged = true;
-            changed.add(child.id);
-            // update UI for this child
-            try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
-          }
-        }
-        // 混合截止日期策略
-        // urgentA 任务已提前实际开工，截止日基于 actualStartTime；其余任务基于计划 startTime
-        const _dlBase = (child.urgentA && child.actualStartTime)
-          ? child.actualStartTime
-          : (child.startTime || child.starttime);
-        if (child.autoCalcEnd && !child.completed) {
-          // 使用统计数据计算截止日期
-          // 已完成的任务不应再被修改
-          const nextDeadline = this.computeAutoDeadline(
-            _dlBase,
-            child.estimatedHours,
-            child.type
-          );
-          if (nextDeadline && child.deadline !== nextDeadline) {
-            child.deadline = nextDeadline;
-            childChanged = true;
-            changed.add(child.id);
-            try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
-          }
-        } else if (!child.completed && Number.isFinite(child.estimatedDay) && child.estimatedDay >= 0) {
-          // 使用手动工期向后传播截止日期（支持 0 = 当天完成），只修改日期部分并保留原有时分
-          // 已完成的任务不应再被修改
-          const baseStart = new Date(_dlBase);
-          if (!isNaN(baseStart.getTime())) {
-            const existingDl = child.deadline ? new Date(child.deadline) : null;
-            const timeSource = existingDl && !isNaN(existingDl.getTime()) ? existingDl : baseStart;
-
-            const newEnd = new Date(baseStart);
-            newEnd.setDate(newEnd.getDate() + child.estimatedDay);
-            newEnd.setHours(timeSource.getHours(), timeSource.getMinutes(), 0, 0);
-
-            const nextDeadline = this.formatDateTimeLocal(newEnd);
-            if (nextDeadline && child.deadline !== nextDeadline) {
-              child.deadline = nextDeadline;
-              childChanged = true;
-              changed.add(child.id);
-              try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
-            }
-          }
-        } else if (!child.completed) {
-          // 边界情况：仅调整了开始时间，未调整截止日期（已完成的任务不应再被修改）
-          // 如果新开始时间超过了现有截止日期，保持最小工期（避免截止 < 开始）
-          if (childChanged && child.deadline && child.startTime) {
-            const dlDate = new Date(child.deadline);
-            const stDate = new Date(child.startTime);
-            if (!isNaN(dlDate.getTime()) && !isNaN(stDate.getTime()) && dlDate < stDate) {
-              const safeEnd = new Date(stDate);
-              safeEnd.setDate(safeEnd.getDate() + 1);
-              safeEnd.setHours(23, 59, 0, 0);
-              child.deadline = this.formatDateTimeLocal(safeEnd);
-              changed.add(child.id);
-              try { this.renderTasks(child.id); } catch (e) { /* ignore */ }
-            }
-          }
-        }
-      }
-      if (
-        !child.urgentA &&  // 已标记加急的任务不重复触发
-        child.actualStartTime &&
-        child.startTime &&
-        new Date(child.actualStartTime) < new Date(child.startTime)
-      ) {
-        this.handleAccelerateConflict(child);
-      }
-      // recurse
+    visited.add(String(task.id));
+    const chain = window.taskChain;
+    // 同一个父任务的间隔天数只算一次，所有后继共用
+    const bufferDays = chain.resolveBufferDays(task, (type) => this.getTypeWeightedStats(type));
+    chain.getSuccessorTasks(this.tasks, task.id).forEach((child) => {
+      const r = chain.applyChainToSuccessor(task, child, {
+        computeAutoDeadline: (start, hours, type) => this.computeAutoDeadline(start, hours, type),
+        // 每次字段变化后刷新该卡片，顶层结束时再统一刷日历
+        afterChange: (c) => this.renderTasks(c.id),
+      }, bufferDays);
+      if (r.startChanged || r.deadlineChanged) changed.add(child.id);
+      if (this._needsAcceleratePrompt(child)) this.handleAccelerateConflict(child);
       this.adjustChainFrom(child, visited, changed);
     });
-    if (topLevel) {
-      if (changed.size > 0) {
-        // one final calendar render to consolidate UI
-        try { this.renderCalendar(); } catch (e) { /* ignore */ }
-        // Persist chain changes asynchronously (debounced inside saveAllData)
-        try { this.saveAllData(); } catch (e) { /* ignore */ }
-      }
+    if (topLevel && changed.size > 0) {
+      this.renderCalendar();
+      // 链式改动统一落盘（saveAllData 内部有防抖）
+      this.saveAllData();
     }
   }
 
@@ -1691,22 +1421,18 @@ class TaskManager {
     this._scanningOverdue = true;
     try {
       const today = new Date();
-      const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const todayDate = window.taskTime.today();
       const tasks = Array.isArray(this.tasks) ? this.tasks : [];
       const overdue = tasks.filter((t) => {
         if (!t || t.completed) return false;
         if (!t.deadline) return false;
-        const dl = new Date(t.deadline);
+        const dl = window.taskTime.parseOrInvalid(t.deadline);
         return !Number.isNaN(dl.getTime()) && dl < todayDate;
       });
       if (overdue.length === 0) return;
       // 对每个逾期任务触发从该任务开始的链式调整
       overdue.forEach((t) => {
-        try {
-          this.adjustChainFrom(t);
-        } catch (e) {
-          console.warn("scanOverdueChains adjustChainFrom failed", e);
-        }
+        this.adjustChainFrom(t);
       });
     } finally {
       this._scanningOverdue = false;
@@ -1740,10 +1466,10 @@ class TaskManager {
           if (autoEnd) {
             newDeadline = autoEnd;
           } else if (Number.isFinite(task.estimatedDay) && task.estimatedDay >= 0) {
-            const d = new Date(_dlBase);
+            const d = window.taskTime.parseOrInvalid(_dlBase);
             d.setDate(d.getDate() + task.estimatedDay);
             d.setHours(23, 59, 0, 0);
-            newDeadline = this.formatDateTimeLocal(d);
+            newDeadline = window.taskTime.formatForStorage(d);
           } else {
             return;
           }
@@ -1754,7 +1480,7 @@ class TaskManager {
         } catch (e) { console.warn("scanAllChains urgentA recalc failed", task.name, e); }
       });
       if (urgentAChanged.size > 0) {
-        try { this.saveAllData(); } catch (e) { console.warn("scanAllChains urgentA saveAllData failed", e); }
+        this.saveAllData();
       }
     } finally {
       this._scanningAllChains = false;
@@ -1776,12 +1502,12 @@ class TaskManager {
     const list = Array.isArray(this.tasks) ? [...this.tasks] : [];
     const filtered = list.filter((t) => t && t.id !== excludeId);
     filtered.sort((a, b) => {
-      const dA = a.deadline ? new Date(a.deadline).getTime() : 0;
-      const dB = b.deadline ? new Date(b.deadline).getTime() : 0;
+      const dA = a.deadline ? window.taskTime.parseOrInvalid(a.deadline).getTime() : 0;
+      const dB = b.deadline ? window.taskTime.parseOrInvalid(b.deadline).getTime() : 0;
       if (dA !== dB) return dB - dA; // 截止日期倒序
       const sA = a.startTime || a.starttime || a.startDate || "";
       const sB = b.startTime || b.starttime || b.startDate || "";
-      return (new Date(sB).getTime() || 0) - (new Date(sA).getTime() || 0);
+      return (window.taskTime.parseOrInvalid(sB).getTime() || 0) - (window.taskTime.parseOrInvalid(sA).getTime() || 0);
     });
     return filtered;
   }
@@ -1819,11 +1545,7 @@ class TaskManager {
     } catch (e) {
       console.warn("bind task-list change failed", e);
     }
-    try {
-      document.addEventListener("click", this._documentClickHandler);
-    } catch (e) {
-      console.warn("bind document click delegation failed", e);
-    }
+    document.addEventListener("click", this._documentClickHandler);
     this.renderTaskTypeOptions();
     this.renderSourceOptions();
     this.renderStatsCards();
@@ -1832,11 +1554,7 @@ class TaskManager {
     this.resetTimerOnPageLoad();
     this.initOrientationDetection();
     // 确保颜色选择器小尺寸样式被注入
-    try {
-      this.ensureColorPickerStyle && this.ensureColorPickerStyle();
-    } catch (e) {
-      console.error("注入颜色选择器样式失败", e);
-    }
+    this.ensureColorPickerStyle && this.ensureColorPickerStyle();
 
     // 根据已保存的设置恢复隐藏已完成状态到 DOM 和按钮样式
     const taskList = document.getElementById("task-list");
@@ -1923,6 +1641,10 @@ class TaskManager {
       this.recycleBin = Array.isArray(data.recycleBin)
         ? data.recycleBin.map(normalize)
         : [];
+      // 任务类型：优先使用服务器数据，其次使用 basetype 回退。
+      // 必须在 normalizeStatistics 之前赋值，以便回填缺失的 typeName
+      this.taskTypes =
+        data.taskTypes || (this._baseTypes && this._baseTypes.taskTypes) || [];
       this.statistics = this.normalizeStatistics(data.statistics);
       if (
         this.isStatisticsEmpty(this.statistics) &&
@@ -1942,10 +1664,7 @@ class TaskManager {
           ? data.confirmDeleteOnRemove
           : true;
       this.serverOnline = true; // ✅ 标记服务器在线
-      // 任务类型与来源平台：优先使用服务器数据，其次使用 basetype 回退，否则留空，由 UI/用户自定义填充
-      this.taskTypes =
-        data.taskTypes || (this._baseTypes && this._baseTypes.taskTypes) || [];
-
+      // 来源平台：优先使用服务器数据，其次使用 basetype 回退，否则留空，由 UI/用户自定义填充
       this.sourcePlatforms =
         data.sourcePlatforms ||
         (this._baseTypes && this._baseTypes.sourcePlatforms) ||
@@ -2017,6 +1736,9 @@ class TaskManager {
         typeof data.dateOnlyDeadlineMode === "boolean"
           ? data.dateOnlyDeadlineMode
           : this.dateOnlyDeadlineMode || false;
+      // 时间一律以 UTC 存储，展示时按当前设备时区换算，所以不再需要「存档时区」配置。
+      // 老文件里可能残留 timezone 字段，保存时会被忽略。
+      this.timezone = "";
       // 是否允许重复节点（默认 false）
       this.allowDuplicateNodes =
         typeof data.allowDuplicateNodes === "boolean"
@@ -2031,11 +1753,7 @@ class TaskManager {
       // 清理超过保留期的回收站任务（含删除日期标记）
       const purged = this.purgeExpiredRecycleTasks(30);
       if (purged) {
-        try {
-          await this.saveAllData();
-        } catch (e) {
-          console.warn("保存回收站清理结果失败", e);
-        }
+        await this.saveAllData();
       }
     } catch (e) {
       console.error("加载失败", e);
@@ -2059,11 +1777,16 @@ class TaskManager {
         .filter(Boolean);
     }
     // 启动时补偿性扫描逾期链，保证在加载后链式任务得到及时调整
-    try { this.scanOverdueChains(); } catch (e) { console.warn("scanOverdueChains failed on load", e); }
+    this.scanOverdueChains();
     // 全量链重算：修正因数据过期导致的所有链式任务日期偏差
-    try { this.scanAllChains(); } catch (e) { console.warn("scanAllChains failed on load", e); }
+    this.scanAllChains();
     // 暂停实时预览：将活跃暂停自动应用为 deadline 延期
-    try { this.applyCurrentPausePreview(); } catch (e) { console.warn("applyCurrentPausePreview failed", e); }
+    this.applyCurrentPausePreview();
+    // 加载时若回填了统计缺失字段（sourceTaskName/typeName），写回 Statistics.json 固化修复
+    if (this._statisticsBackfilled) {
+      this._statisticsBackfilled = false;
+      await this.saveAllData();
+    }
   }
 
   // 清理超过 retentionDays 的回收站任务；返回是否发生变更
@@ -2093,7 +1816,7 @@ class TaskManager {
     const tasks = Array.isArray(this.tasks) ? this.tasks : [];
     tasks.forEach(task => {
       if (!task || !task.paused || !task.pausedAt) return;
-      const pausedAt = new Date(task.pausedAt);
+      const pausedAt = window.taskTime.parseOrInvalid(task.pausedAt);
       pausedAt.setHours(0, 0, 0, 0);
       const pausedDays = Math.floor((today - pausedAt) / 86400000);
       if (pausedDays < 1) return;
@@ -2102,11 +1825,11 @@ class TaskManager {
         task.pausePreDeadline = task.deadline;
       }
       if (task.pausePreDeadline) {
-        const baseDeadline = new Date(task.pausePreDeadline);
+        const baseDeadline = window.taskTime.parseOrInvalid(task.pausePreDeadline);
         if (!isNaN(baseDeadline.getTime())) {
-          const extendedDeadline = new Date(baseDeadline);
+          const extendedDeadline = window.taskTime.parseOrInvalid(baseDeadline);
           extendedDeadline.setDate(extendedDeadline.getDate() + pausedDays);
-          const formatted = this.formatDateTimeLocal(extendedDeadline);
+          const formatted = window.taskTime.formatForStorage(extendedDeadline);
           if (task.deadline !== formatted) {
             task.deadline = formatted;
             this.adjustChainFrom(task);
@@ -2117,40 +1840,7 @@ class TaskManager {
   }
 
   resetTimerOnPageLoad() {
-    if (this.currentTimer) {
-      clearInterval(this.currentTimer);
-      this.currentTimer = null;
-      this.timerTaskId = null;
-      this.timerStartTime = null;
-    }
-  }
-  formatHours(hours) {
-    if (!hours || hours === 0) return "0小时";
-    const wholeHours = Math.floor(hours);
-    const minutes = Math.round((hours - wholeHours) * 60);
-    if (wholeHours === 0) {
-      return `${minutes}分钟`;
-    } else if (minutes === 0) {
-      return `${wholeHours}小时`;
-    } else {
-      return `${wholeHours}小时${minutes}分钟`;
-    }
-  }
-  async loadTasks() {
-    try {
-      const res = await fetch("/load");
-      const data = await res.json();
-      return data.tasks || [];
-    } catch (e) {
-      console.error("加载失败，使用空数据", e);
-      return [];
-    }
-  }
-  loadTaskTypesFromServer(data) {
-    // 从远程数据优先读取；若无则尝试从 basetype.json 回退；如都无则返回空数组（默认已移至 basetype.json）
-    return (
-      data.taskTypes || (this._baseTypes && this._baseTypes.taskTypes) || []
-    );
+    this.timer.reset();
   }
   prepareTasksForSave() {
     return (this.tasks || []).map((task) => this.prepareTaskForSave(task));
@@ -2160,7 +1850,8 @@ class TaskManager {
     if (!this._pendingSave) {
       this._pendingSave = new Promise((resolve) => {
         clearTimeout(this._saveDebounceTimer);
-        this._saveDebounceTimer = setTimeout(async () => {
+        const run = async () => {
+          this._saveDebounceTimer = null;
           try {
             // 如果已有保存正在进行，等待其完成以串行化写入
             if (this._saveInProgress) {
@@ -2174,7 +1865,7 @@ class TaskManager {
             // 发起新一次保存并记录为 in-progress
             this._saveInProgress = (async () => {
               try {
-                await fetch("/save", {
+                const res = await fetch("/save", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({
@@ -2195,42 +1886,53 @@ class TaskManager {
                     allowDuplicateNodes: !!this.allowDuplicateNodes,
                     dateOnlyDeadlineMode: !!this.dateOnlyDeadlineMode,
                     livePreviewCurrentPause: !!this.livePreviewCurrentPause,
+                    // 时间统一存 UTC，不再写 timezone 字段
                     statistics:
                       this.statistics || this.createEmptyStatistics(),
                   }),
                 });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
               } catch (e) {
                 console.error("保存失败", e);
                 this.serverOnline = false;
+                // 失败必须让用户看见，否则会以为已经存上了
+                this.showMessage(
+                  "保存失败：" + (e && e.message ? e.message : "网络错误")
+                );
                 throw e;
               }
             })();
 
             await this._saveInProgress;
+          } catch (_) {
+            // 具体错误已在 _saveInProgress 内部记录并提示过；
+            // 这里吞掉是为了不让定时器里的 Promise 变成 unhandledrejection
           } finally {
             this._saveInProgress = null;
             resolve();
             this._pendingSave = null;
             // 保存后触发一次逾期扫描以保证链式任务得到及时调整（异步以避免阻塞保存流程）
             setTimeout(() => {
-              try { this.scanOverdueChains(); } catch (e) { console.warn("scanOverdueChains failed after save", e); }
+              this.scanOverdueChains();
             }, 0);
           }
-        }, 150);
+        };
+        this._runSave = run;
+        this._saveDebounceTimer = setTimeout(run, 150);
       });
     }
 
     return this._pendingSave;
   }
 
-  loadSourcePlatformsFromServer(data) {
-    // 从远程数据优先读取；若无则尝试从 basetype.json 回退；如都无则返回空数组（默认已移至 basetype.json）
-    return (
-      data.sourcePlatforms ||
-      (this._baseTypes && this._baseTypes.sourcePlatforms) ||
-      []
-    );
+  // 跳过防抖立即落盘（页面隐藏 / 关闭前调用，避免丢最后一笔修改）
+  flushPendingSave() {
+    if (!this._saveDebounceTimer || !this._runSave) return;
+    clearTimeout(this._saveDebounceTimer);
+    this._saveDebounceTimer = null;
+    this._runSave();
   }
+
   bindEvents() {
     document
       .getElementById("add-task-btn")
@@ -2352,6 +2054,16 @@ class TaskManager {
     // 绑定全局 Esc 快捷键（按一次退出最上层弹窗；在输入框内按 Esc 也会触发，默认行为为取消并关闭最上层弹窗）
     this._globalEscHandler = (e) => this.handleGlobalEsc(e);
     window.addEventListener("keydown", this._globalEscHandler);
+    // 页面被隐藏（切标签、关标签、手机切后台）时立刻把待发的保存落盘
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.flushPendingSave();
+    });
+    // 还有未落盘的保存时提示一下，别让用户以为已经存好了
+    window.addEventListener("beforeunload", (e) => {
+      if (!this._saveDebounceTimer) return;
+      e.preventDefault();
+      e.returnValue = "";
+    });
 
     document.getElementById("calendar-prev").addEventListener("click", () => {
       this.changeMonth(-1);
@@ -2391,11 +2103,7 @@ class TaskManager {
             if (!ok) return;
             // 直接清空回收站并保存（后端 cleanup_unused_images 会移除回收站内未引用的图片）
             this.recycleBin = [];
-            try {
-              this.saveAllData();
-            } catch (e) {
-              console.warn("清空回收站时保存失败", e);
-            }
+            this.saveAllData();
             this.renderTasks();
             this.updateStats();
             this.showMessage("回收站已清空");
@@ -2422,11 +2130,7 @@ class TaskManager {
             }
           });
           // 持久化设置到 index.json
-          try {
-            this.saveAllData();
-          } catch (e) {
-            console.warn("保存 hideCompleted 设置失败", e);
-          }
+          this.saveAllData();
           // 重新渲染任务，横竖屏会自动处理布局
           this.renderTasks();
         });
@@ -2458,18 +2162,7 @@ class TaskManager {
         return await this._handleModalSave(formData, editingId);
       },
       onCancel: async () => {
-        try {
-          if (this.currentImageData && typeof fetch === 'function') {
-            await fetch('/delete-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ path: this.currentImageData }),
-            });
-          }
-        } catch (e) {
-          console.error('取消时删除临时图片失败', e);
-        }
-        this.currentImageData = null;
+        // 临时上传图片的清理由 TaskModalController 自己处理（含 blob 预览释放）
       },
     });
     this.modalController.initEvents();
@@ -2503,7 +2196,7 @@ class TaskManager {
         while (existingIds.has(idCandidate)) idCandidate = `${baseId || 'type'}-${counter++}`;
         this.taskTypes.push({ id: idCandidate, name: qtName, color });
         type = idCandidate;
-        try { this.renderTaskTypeOptions(); this.renderPageSettingsSwatches(); } catch (e) {}
+        this.renderTaskTypeOptions(); this.renderPageSettingsSwatches();
       }
     } catch (e) { console.error('创建快捷类型失败', e); }
 
@@ -2521,7 +2214,7 @@ class TaskManager {
         while (existingIds.has(idCandidate)) idCandidate = `${baseId || 'source'}-${counter++}`;
         this.sourcePlatforms.push({ id: idCandidate, name: qsName, color });
         source = idCandidate;
-        try { this.renderSourceOptions(); } catch (e) {}
+        this.renderSourceOptions();
       }
     } catch (e) { console.error('创建快捷来源失败', e); }
 
@@ -2546,9 +2239,18 @@ class TaskManager {
         this.showMessage('不能将任务绑定为自己的前序');
         return false;
       }
-      conflictSiblings = (this.tasks || []).filter(
-        t => t && t.dependencyType === 'line' && t.lineTaskId === lineTaskId && t.id !== editingId
-      );
+      // 只有「前序真的变了」才需要问并列/插入。
+      // 任务本来就挂在这个前序下（已有并列分支）时，重复询问没有任何新信息，
+      // 而且误点「插入」会把现有兄弟改挂到本任务下面，静默改写链结构。
+      const previousParentId = editingId
+        ? ((this.tasks || []).find(t => t && t.id === editingId)?.lineTaskId ?? null)
+        : null;
+      const parentChanged = !editingId || previousParentId !== lineTaskId;
+      conflictSiblings = parentChanged
+        ? (this.tasks || []).filter(
+            t => t && t.dependencyType === 'line' && t.lineTaskId === lineTaskId && t.id !== editingId
+          )
+        : [];
       if (conflictSiblings.length > 0) {
         linkMode = await this.showLinkModeDialog();
         if (!linkMode) return false; // 用户取消保留弹窗
@@ -2586,7 +2288,7 @@ class TaskManager {
       if (shouldRebindChildren) this.rebindSuccessorsTo(task.id, oldParentId);
 
       task.name = name; task.type = type; task.source = source; task.progress = progress;
-      task.startTime = starttime; task.starttime = starttime;
+      task.startTime = starttime;
       task.dependencyType = dependencyType; task.lineTaskId = newParentId;
       task.autoSchedule = autoSchedule; task.autoCalcEnd = autoCalcEnd;
       task.bufferDays = bufferDays; task.actualStartTime = actualStartTime || null;
@@ -2600,7 +2302,8 @@ class TaskManager {
       task.nodes = [...nodes];
       if (image !== undefined) {
         task.image = image;
-        if (this.currentImageW && this.currentImageH) { task.w = this.currentImageW; task.h = this.currentImageH; }
+        // 换了新图时用上传返回的尺寸覆盖旧值
+        if (fd.w && fd.h) { task.w = fd.w; task.h = fd.h; }
       }
       task.completed = progress === 100 || !!completedAtInput;
       if (task.completed && task.nodes) task.nodes.forEach(n => (n.completed = true));
@@ -2633,11 +2336,11 @@ class TaskManager {
       // ════════════════════════════════
       // 情况 B：新增任务
       // ════════════════════════════════
-      const imgData = this.modalController?.currentImageData || image;
+      const imgData = image;
       const task = {
-        id: Date.now(),
+        id: fd.id || Date.now(),
         name, type, source, progress,
-        startTime: starttime, starttime,
+        startTime: starttime,
         deadline, completedAt: completedAtInput || null,
         estimatedHours, estimatedDay,
         payment, paymentMode: paymentMode || null, paymentRecords,
@@ -2651,10 +2354,10 @@ class TaskManager {
         actualStartTime: actualStartTime || null,
         dependencyType, lineTaskId, autoSchedule, autoCalcEnd, bufferDays,
       };
-      if (this.currentImageW && this.currentImageH) { task.w = this.currentImageW; task.h = this.currentImageH; }
+      if (fd.w && fd.h) { task.w = fd.w; task.h = fd.h; }
       if (linkMode === 'insert') conflictSiblings.forEach(s => { s.lineTaskId = task.id; });
 
-      let insertIndex = this.tasks.findIndex(t => t.deadline && new Date(task.deadline) < new Date(t.deadline));
+      let insertIndex = this.tasks.findIndex(t => t.deadline && window.taskTime.parseOrInvalid(task.deadline) < window.taskTime.parseOrInvalid(t.deadline));
       if (insertIndex === -1) insertIndex = this.tasks.length;
       this.tasks.splice(insertIndex, 0, task);
 
@@ -2668,21 +2371,18 @@ class TaskManager {
     }
 
     // ── 清理 quick-add 输入 ──
-    try {
-      const qtName = document.getElementById('quick-add-type-name');
-      const qtColor = document.getElementById('quick-add-type-color');
-      if (qtName) qtName.value = ''; if (qtColor) qtColor.value = '#3b82f6';
-      const qsName = document.getElementById('quick-add-source-name');
-      const qsColor = document.getElementById('quick-add-source-color');
-      if (qsName) qsName.value = ''; if (qsColor) qsColor.value = '#3b82f6';
-    } catch (e) {}
+        const qtName = document.getElementById('quick-add-type-name');
+    const qtColor = document.getElementById('quick-add-type-color');
+    if (qtName) qtName.value = ''; if (qtColor) qtColor.value = '#3b82f6';
+    const qsName = document.getElementById('quick-add-source-name');
+    const qsColor = document.getElementById('quick-add-source-color');
+    if (qsName) qsName.value = ''; if (qsColor) qsColor.value = '#3b82f6';
 
     this.saveAllData();
     this.updateStats();
     this.updateSmartRecommendations();
     this.renderCalendar();
     this.editingTaskId = null;
-    this.imageChanged = false;
     this.updateMonthlyStatsDisplay();
     // 返回 undefined（不返回 false）表示保存成功，TaskModalController 随后关闭弹窗
   }
@@ -2778,7 +2478,6 @@ class TaskManager {
       if (m) m.classList.add("hidden");
     }
     this.editingTaskId = null;
-    this.currentImageData = null;
   }
 
   // 编辑态：点击遮罩或按 Esc 时自动保存并退出；新增时仍直接关闭
@@ -2858,8 +2557,8 @@ class TaskManager {
   getDaysRemaining(deadline) {
     if (!deadline) return Infinity;
     const now = new Date();
-    const deadlineDate = new Date(deadline);
-    const nowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const deadlineDate = window.taskTime.parseOrInvalid(deadline);
+    const nowDate = window.taskTime.today();
     const deadlineDateOnly = new Date(
       deadlineDate.getFullYear(),
       deadlineDate.getMonth(),
@@ -2890,53 +2589,12 @@ class TaskManager {
 
   // 统计用净收（到账-退款）；若无收支记录则向后兼容使用 task.payment
   getTaskNetIncomeForStats(task) {
-    if (!task || task.abandoned) return 0;
-    const records = task.paymentRecords;
-    if (!Array.isArray(records) || records.length === 0) {
-      return Number(task.payment) || 0;
-    }
-    return Math.max(0, records.reduce((sum, r) => {
-      const amt = Number(r.amount) || 0;
-      return r.type === "refund" ? sum - amt : sum + amt;
-    }, 0));
+    return window.taskCardShared.getTaskNetIncomeForStats(task);
   }
 
   // 获取任务收款状态信息（用于卡片徽章）
   getPaymentStatusInfo(task) {
-    if (!task) return null;
-    if (task.abandoned) return { label: "已废弃", variant: "abandoned" };
-    const contracted = Number(task.payment) || 0;
-    const records = Array.isArray(task.paymentRecords) ? task.paymentRecords : [];
-    const mode = task.paymentMode || "";
-    if (mode === "free") return { label: "免费", variant: "free" };
-    if (!contracted && records.length === 0 && !mode) return null;
-    const received = records
-      .filter((r) => r.type !== "refund")
-      .reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const refunded = records
-      .filter((r) => r.type === "refund")
-      .reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const net = received - refunded;
-    const hasRefund = refunded > 0;
-    const modeLabels = {
-      full_pre: "全款先付", full_post: "全款后付",
-      deposit: "定金+尾款", milestone: "节点付款",
-    };
-    const modeLabel = modeLabels[mode] || "";
-    if (records.length === 0) {
-      return modeLabel ? { label: modeLabel + "·待收", variant: "pending" } : null;
-    }
-    if (received > 0 && net <= 0) return { label: "全额退款", variant: "refunded" };
-    if (contracted > 0 && net >= contracted) {
-      return { label: `¥${net.toFixed(0)} 已全收${hasRefund ? "(含退款)" : ""}`, variant: "paid-full" };
-    }
-    if (net > 0) {
-      return {
-        label: `¥${net.toFixed(0)}/${contracted > 0 ? "¥" + contracted.toFixed(0) : "?"}${hasRefund ? "(含退款)" : ""}`,
-        variant: "paid-partial",
-      };
-    }
-    return { label: "未收款", variant: "pending" };
+    return window.taskCardShared.getPaymentStatusInfo(task);
   }
 
   // 渲染 modal 内的收支记录列表
@@ -2965,7 +2623,7 @@ class TaskManager {
           task.abandonedAt = new Date().toISOString();
           // 触发前序任务的链式时间调整，更新被重绑后续任务的排期
           if (predTask) {
-            try { this.adjustChainFrom(predTask); } catch (e) { console.warn('adjustChainFrom on abandon failed', e); }
+            this.adjustChainFrom(predTask);
           }
           this.saveAllData();
           this.renderTasks(taskId);
@@ -3044,7 +2702,7 @@ class TaskManager {
   calculateDailyTime(deadline, estimatedHours, currentProgress, actualHours) {
     if (!deadline) return null;
     const now = new Date();
-    const deadlineDate = new Date(deadline);
+    const deadlineDate = window.taskTime.parseOrInvalid(deadline);
     const daysRemaining = this.getDaysRemaining(deadline);
     const remainingHours = Math.max(0, estimatedHours - (actualHours || 0));
 
@@ -3067,10 +2725,10 @@ class TaskManager {
   getDeadlineStatus(deadline) {
     if (!deadline) return null;
     const now = new Date();
-    const deadlineDate = new Date(deadline);
+    const deadlineDate = window.taskTime.parseOrInvalid(deadline);
     const diffMs = deadlineDate - now;
     const diffHours = diffMs / (1000 * 60 * 60);
-    const nowDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const nowDate = window.taskTime.today();
     const deadlineDateOnly = new Date(
       deadlineDate.getFullYear(),
       deadlineDate.getMonth(),
@@ -3125,11 +2783,7 @@ class TaskManager {
       this.recycleBin = (this.recycleBin || []).filter(
         (task) => task.id !== id
       );
-      try {
-        await this.saveAllData();
-      } catch (e) {
-        console.warn("保存回收站删除结果失败", e);
-      }
+      await this.saveAllData();
       this.renderTasks(id);
       this.showMessage("已从回收站永久删除");
       this.updateStats();
@@ -3178,11 +2832,7 @@ class TaskManager {
           typeof newImage === "string" &&
           newImage.startsWith("pic/")
         ) {
-          try {
-            newImage = await this.moveImageToRecycle(newImage);
-          } catch (e) {
-            console.warn("移动图片到回收站失败", e);
-          }
+          newImage = await window.taskImage.moveToRecycle(newImage);
         }
         moved.push({
           ...t,
@@ -3193,51 +2843,13 @@ class TaskManager {
       this.recycleBin = this.recycleBin.concat(moved);
     }
 
-    try {
-      await this.saveAllData();
-    } catch (e) {
-      console.warn("保存移动到回收站的任务失败", e);
-    }
+    await this.saveAllData();
     this.updateStats();
     this.updateSmartRecommendations();
     this.renderTasks(id);
     this.renderCalendar();
     this.showMessage("任务已移动到回收站");
     this.updateMonthlyStatsDisplay();
-  }
-
-  async moveImageToRecycle(imagePath) {
-    if (!imagePath || typeof imagePath !== "string") return imagePath;
-    try {
-      const res = await fetch("/move-image-to-recycle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: imagePath }),
-      });
-      if (!res.ok) return imagePath;
-      const data = await res.json();
-      return data.newPath || imagePath;
-    } catch (e) {
-      console.warn("moveImageToRecycle error", e);
-      return imagePath;
-    }
-  }
-
-  async restoreImageFromRecycle(imagePath) {
-    if (!imagePath || typeof imagePath !== "string") return imagePath;
-    try {
-      const res = await fetch("/restore-image-from-recycle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: imagePath }),
-      });
-      if (!res.ok) return imagePath;
-      const data = await res.json();
-      return data.newPath || imagePath;
-    } catch (e) {
-      console.warn("restoreImageFromRecycle error", e);
-      return imagePath;
-    }
   }
 
   // 从回收站恢复任务
@@ -3260,13 +2872,9 @@ class TaskManager {
       if (
         copy.image &&
         typeof copy.image === "string" &&
-        copy.image.startsWith("recyclepic/")
+        window.taskUtils.isRecycleImage(copy.image)
       ) {
-        try {
-          copy.image = await this.restoreImageFromRecycle(copy.image);
-        } catch (e) {
-          console.warn("恢复图片到主目录失败", e);
-        }
+        copy.image = await window.taskImage.restoreFromRecycle(copy.image);
       }
       // 恢复为独立任务，清理链式绑定字段，避免直接回链
       copy.dependencyType = "none";
@@ -3290,11 +2898,7 @@ class TaskManager {
     }
 
     // 持久化变更（依然需要保存到服务器），但避免全局刷新
-    try {
-      await this.saveAllData();
-    } catch (e) {
-      console.warn("保存恢复任务失败", e);
-    }
+    await this.saveAllData();
 
     // 仅更新统计、日历与推荐（局部更新）
     this.updateStats();
@@ -3316,11 +2920,7 @@ class TaskManager {
       }
 
       // 先尝试保存更新到服务端，确保后端数据与前端同步
-      try {
-        await this.saveAllData();
-      } catch (e) {
-        console.warn("保存完成状态时出错", e);
-      }
+      await this.saveAllData();
 
       // 完成状态改变后，重算链式后继
       this.withAdjustOverlay(async () => {
@@ -3349,11 +2949,7 @@ class TaskManager {
       }
 
       // 同步刷新日历/日程条，确保任务卡片变更同时反映到日程视图
-      try {
-        this.renderCalendar();
-      } catch (e) {
-        console.warn("刷新日历失败", e);
-      }
+      this.renderCalendar();
 
       // 更新月度统计显示
       this.updateMonthlyStatsDisplay();
@@ -3403,31 +2999,6 @@ class TaskManager {
     this.refreshTaskPreviewIfOpen(task.id);
   }
 
-  // 统一更新任务进度的方法
-  updateProgress(id, progress) {
-    const task = this.tasks.find((t) => t.id === id);
-    if (task) {
-      const wasCompleted = !!task.completed;
-      task.progress = progress;
-      task.completed = progress === 100;
-      task.actualHours = Math.round((task.estimatedHours * progress) / 100);
-      if (task.progress === 100 && task.nodes) {
-        task.nodes.forEach((node) => (node.completed = true));
-      }
-      if (!wasCompleted && task.completed) {
-        task.completedAt = new Date().toISOString();
-        this.recordCompletionStatistics(task);
-      } else if (wasCompleted && !task.completed) {
-        task.completedAt = null;
-        this.removeStatisticsSample(task.type, task.id);
-      }
-      this.saveAllData();
-      this.updateStats();
-      this.updateSmartRecommendations();
-      this.renderTasks(task.id);
-      this.refreshTaskPreviewIfOpen(id);
-    }
-  }
   setFilter(filter, preserveFirstRow = false) {
     this.currentFilter = filter;
     this._preserveStatsFirstRowOrder = preserveFirstRow;
@@ -3543,7 +3114,7 @@ class TaskManager {
           if (t.completed) {
             const ca = t.completedAt || t.completed_at || null;
             if (!ca) return true; // 如果没有完成时间则保留（尽量不误删）
-            const cdt = new Date(ca);
+            const cdt = window.taskTime.parseOrInvalid(ca);
             if (isNaN(cdt.getTime())) return true;
             return cdt >= startOfThisMonth; // 仅保留本月及之后完成的任务
           }
@@ -3551,7 +3122,7 @@ class TaskManager {
           if (t.abandoned) {
             const aa = t.abandonedAt || null;
             if (!aa) return true;
-            const adt = new Date(aa);
+            const adt = window.taskTime.parseOrInvalid(aa);
             if (isNaN(adt.getTime())) return true;
             return adt >= startOfThisMonth;
           }
@@ -3579,7 +3150,7 @@ class TaskManager {
         if (!a.deadline && !b.deadline) return 0;
         if (!a.deadline) return 1;
         if (!b.deadline) return -1;
-        return new Date(a.deadline) - new Date(b.deadline);
+        return window.taskTime.parseOrInvalid(a.deadline) - window.taskTime.parseOrInvalid(b.deadline);
       });
     }
 
@@ -3592,10 +3163,10 @@ class TaskManager {
         if (!a.deadline && !b.deadline) return 0;
         if (!a.deadline) return 1;
         if (!b.deadline) return -1;
-        return new Date(a.deadline) - new Date(b.deadline);
+        return window.taskTime.parseOrInvalid(a.deadline) - window.taskTime.parseOrInvalid(b.deadline);
       }
 
-      return new Date(b.createdAt) - new Date(a.createdAt);
+      return window.taskTime.parseOrInvalid(b.createdAt) - window.taskTime.parseOrInvalid(a.createdAt);
     });
   }
 
@@ -3603,6 +3174,8 @@ class TaskManager {
     this.renderStatsCards();
   }
   updateSmartRecommendations() {
+    // 工时稿价面板与工作量分析共用同一批统计输入，一并刷新
+    this.updatePricingAnalysis();
     const intelligentWorkload = this.calculateIntelligentWorkload();
     const recommendationsPanel = document.getElementById(
       "smart-recommendations"
@@ -3666,6 +3239,78 @@ class TaskManager {
         .join("");
     }
   }
+  // 工时稿价分析：按类型展示参考工时与计费口径
+  // 计费口径：基础价 = 参考工时 P25 × 费率，超出部分按同一费率计
+  // 该结构保证综合时薪恒 >= 费率（低于 P25 完成时反而更高）
+  updatePricingAnalysis() {
+    const listEl = document.getElementById("pricing-analysis-list");
+    const emptyEl = document.getElementById("pricing-analysis-empty");
+    if (!listEl) return;
+    const esc = (s) =>
+      String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const round1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
+    const money = (v) => (Number.isFinite(v) ? `¥${Math.round(v)}` : "—");
+    const types = (this.statistics && this.statistics.types) || {};
+    const rows = [];
+    Object.entries(types).forEach(([typeId, entry]) => {
+      if (!entry) return;
+      const stats = this.getTypeWeightedStats(typeId);
+      const n =
+        stats && Number.isFinite(stats.quantileSampleCount)
+          ? stats.quantileSampleCount
+          : 0;
+      if (n <= 0) return;
+      rows.push({ name: entry.typeName || typeId, stats, n });
+    });
+    if (rows.length === 0) {
+      listEl.innerHTML = "";
+      if (emptyEl) emptyEl.style.display = "";
+      return;
+    }
+    if (emptyEl) emptyEl.style.display = "none";
+    listEl.innerHTML = rows
+      .map(({ name, stats, n }) => {
+        // 全部取历史实际数据的分位值（不做任何理论换算）：
+        // 工时 P25/P50/P75、成交价 P25/P50/P75、实际费率 = 中位价 ÷ 中位工时
+        // 样本不足 4 张时四分位没有意义，退化为中位数单点估计
+        const enough = n >= 4;
+        const h25 = enough ? stats.hoursP25 : stats.hoursP50;
+        const h375 = enough ? stats.hoursP375 : stats.hoursP50;
+        const h50 = stats.hoursP50;
+        const h75 = enough ? stats.hoursP75 : stats.hoursP50;
+        const p25 = enough ? stats.priceP25 : stats.priceP50;
+        const p375 = enough ? stats.priceP375 : stats.priceP50;
+        const p50 = stats.priceP50;
+        const p75 = enough ? stats.priceP75 : stats.priceP50;
+        const hoursText = enough
+          ? `${round1(h25)} / ${round1(h375)} / ${round1(h50)} / ${round1(h75)} h`
+          : `${round1(h50)} h`;
+        const priceText = Number.isFinite(p50)
+          ? enough
+            ? `${money(p25)} / ${money(p375)} / ${money(p50)} / ${money(p75)}`
+            : money(p50)
+          : "—";
+        const rateText = Number.isFinite(stats.rate) ? round1(stats.rate) : null;
+        return `<div class="p-2 mb-1" style="border-bottom:1px solid rgba(0,0,0,.06);">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-semibold truncate">${esc(name)}</span>
+            <span class="text-xs shrink-0" style="opacity:.5;">${n} 张</span>
+          </div>
+          <div class="text-xs mt-1">参考工时 ${hoursText}</div>
+          <div class="text-xs mt-1">参考价 ${priceText}</div>
+          <div class="text-xs mt-1" style="opacity:.45;">${
+            enough ? "分位 P25 / P37.5 / P50 / P75" : "样本不足，取中位数"
+          }</div>
+          <div class="text-xs mt-1" style="opacity:.5;">费率 ${
+            rateText !== null ? `¥${rateText}/h` : "—"
+          }</div>
+        </div>`;
+      })
+      .join("");
+  }
   // ✅ 局部插入新卡片，不触发全局刷新
   insertTaskCardLocally(task, index) {
     const taskList = document.getElementById("task-list");
@@ -3686,8 +3331,6 @@ class TaskManager {
       taskList.appendChild(newCardEl);
     }
 
-    // 重新绑定事件（如删除、编辑按钮）
-    this.bindTaskEvents();
 
     // 如果是横屏（瀑布流模式），触发重新布局动画
     if (this.isLandscape) {
@@ -3740,7 +3383,6 @@ class TaskManager {
         existingCard.classList.add("is-laid-out");
       }
 
-      this.bindTaskEvents();
       if (this.isLandscape) this.applyMasonryLayout();
       return;
     }
@@ -3757,7 +3399,6 @@ class TaskManager {
       taskList.insertAdjacentHTML("beforeend", cardHTML);
     });
 
-    this.bindTaskEvents();
 
     if (!this.isLandscape) {
       // 检测当前容器宽度是否能容纳多列瀑布流（在大平板竖屏上常见）
@@ -3869,20 +3510,12 @@ class TaskManager {
   }
 
   getTimerButton(task) {
-    if (!task || task.completed) return "";
-    const running = this.isTimerRunning(task.id);
-    const isPaused = !!task.paused;
-    const type = this.taskTypes.find((t) => t.id === task.type);
-    const typeColor = type ? type.color : "#95A5A6";
-    const btnBg = this.computeButtonBgFromHex(typeColor);
-    const timerBtn = `<button class="timer-btn text-white rounded-full px-4 py-2 flex items-center justify-center transition-colors flex-shrink-0" data-task-id="${task.id}" data-testid="timer-btn-${task.id}" style="background:${btnBg}"><span class="material-icons text-sm mr-2">${this.getTimerIcon(running)}</span><span class="text-sm font-medium">${this.getTimerLabel(running, !!task.actualStartTime, isPaused)}</span></button>`;
-    // 暂停/恢复按钮（已完成和废弃不显示）
-    if (task.abandoned) return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}</div>`;
-    const pauseIcon = isPaused ? "replay" : "play_disabled";
-    const pauseClass = isPaused ? "pause-btn--paused" : "";
-    const pauseBgStyle = isPaused ? "" : `background:${btnBg};`;
-    const pauseBtn = `<button class="pause-btn ${pauseClass}" data-task-id="${task.id}" data-testid="pause-btn-${task.id}" style="${pauseBgStyle}"><span class="material-icons-round text-sm">${pauseIcon}</span></button>`;
-    return `<div class="mt-3 flex justify-center items-center gap-2">${timerBtn}${pauseBtn}</div>`;
+    // 按钮 HTML 由 scripts/task-card-shared.js 统一产出（与 BarView 同源）
+    return window.taskCardShared.getTimerButtonHtml(task, {
+      isRunning: !!task && this.isTimerRunning(task.id),
+      taskTypes: this.taskTypes,
+      getButtonBg: (hex) => this.computeButtonBgFromHex(hex),
+    });
   }
 
   updateTimerButtonUI(task) {
@@ -3919,291 +3552,30 @@ class TaskManager {
   }
 
   getTimerIcon(running) {
-    return running ? "stop" : "timer";
+    return window.taskCardShared.getTimerIcon(running);
   }
 
   // running: 是否正在计时；hasActualStart：是否已有实际开始时间；paused: 是否暂停中
   getTimerLabel(running, hasActualStart = false, paused = false) {
-    if (running) return "结束画画计时";
-    if (paused) return "继续委托并计时";
-    return hasActualStart ? "开始画画计时" : "开始首次画画计时";
+    return window.taskCardShared.getTimerLabel(running, hasActualStart, paused);
   }
 
   createTaskCard(task) {
-    const type = this.taskTypes.find((t) => t.id === task.type);
-    const typeColor = type ? type.color : "#95A5A6";
-    //用户自定义颜色函数计算浅色背景
-    const lightBg = this.computeLightBgFromHex(typeColor);
-    const cardTextColor = "#1f2937";
-    const typeName = type ? type.name : "未知类型";
-    const source = this.sourcePlatforms.find((s) => s.id === task.source);
-    const sourceColor = source ? source.color : "#95A5A6";
-    const sourceName = source ? source.name : "未知平台";
-    const deadlineStatus = this.getDeadlineStatus(task.deadline);
-    // 使用语义化的截止状态用于数据驱动的样式（completed / overdue / imminent / today / tomorrow / urgent / normal）
-    const deadlineStatusName = task.completed
-      ? "completed"
-      : deadlineStatus?.status || "normal";
-    const dailyTime = this.calculateDailyTime(
-      task.deadline,
-      task.estimatedHours,
-      task.progress,
-      task.actualHours
-    );
-    const completedHours = task.actualHours || 0;
-    const remainingHours = Math.max(0, task.estimatedHours - completedHours);
-    const progressPercentage =
-      task.estimatedHours > 0
-        ? Math.round((completedHours / task.estimatedHours) * 100)
-        : 0;
-    let progressLevel;
-    if (progressPercentage > 100) progressLevel = "over";
-    else if (progressPercentage === 100) progressLevel = "complete";
-    else if (progressPercentage >= 70) progressLevel = "high";
-    else if (progressPercentage >= 40) progressLevel = "mid";
-    else progressLevel = "low";
-
-    const hasNodes = task.nodes && task.nodes.length > 0;
-    const hasImage = task.image && task.image.trim() !== "";
-    const hasPayment = task.payment && task.payment > 0;
-    // 收款状态信息（新系统）
-    const paymentInfo = this.getPaymentStatusInfo(task);
-    const netIncome = this.getTaskNetIncomeForStats(task) || (task.payment || 0);
-    const hourlyRate = netIncome > 0
-      ? task.completed
-        ? task.actualHours > 0
-          ? (netIncome / task.actualHours).toFixed(2)
-          : 0
-        : task.estimatedHours > 0
-        ? (netIncome / task.estimatedHours).toFixed(2)
-        : 0
-      : 0;
-
-    // Header 使用现有计算的 lightBg；Body 在 Header 的基础上向白色混合 70% 以增强可读性
-    const headerBg = lightBg;
-    const bodyBg = this.blendWithWhite(headerBg, this.cardBodyWhiteBlend);
-
-    return `
-            <div class="task-card ${
-              task.completed ? "completed" : ""
-            } ${
-              task.abandoned ? "abandoned" : ""
-            } rounded-xl ${
-      deadlineStatus?.urgent && !task.abandoned ? "deadline-warning" : ""
-    }" data-task-id="${task.id}" data-type="${
-      task.type
-    }" data-testid="task-card-${
-      task.id
-    }" style="background: transparent; color: ${cardTextColor}; overflow: hidden;">
-               <!-- 标题模块 -->
-               <div class="task-card-header" style="background: ${headerBg}; padding: 1.5rem; padding-block-end: 0; border-top-left-radius: 1rem; border-top-right-radius: 1rem;">
-                <div class="flex items-start justify-between" style="transform: translateY(-5px); margin-bottom: -5px; line-height:1.15;">
-                    <div class="flex justify-between items-center flex-1" style="min-width:0;">
-                        <div class="flex-1" style="min-width:0;">
-                            <h3 class="font-bold text-xl ${
-                              task.completed ? "line-through" : ""
-                            }" style="color: inherit; margin:0; line-height:1.15; overflow-wrap:anywhere;">${
-      task.name.replace(/_/g, '_<wbr>')
-    }</h3>
-                        </div>
-                    </div>
-                    <div class="flex flex-col items-start gap-1">
-                        <div class="flex items-start gap-2" >
-                            <!-- 编辑按钮 -->
-                            <button class="flex items-center edit-btn" data-task-id="${
-                              task.id
-                            }" data-testid="edit-btn-${task.id}">
-                                <span class="material-icons text-sm">edit</span>
-                            </button> 
-                            <!-- 专门的完成按钮点击区域 -->
-                            <div class="task-complete-area flex items-center cursor-pointer rounded transition-colors scale-90" data-testid="complete-area-${
-                              task.id
-                            }">
-                                ${
-                                  task.completed
-                                    ? '<span class="material-icons text-green-500">check_circle</span>'
-                                    : '<span class="material-icons text-green-500">radio_button_unchecked</span>'
-                                }
-                            </div>
-                            ${
-                              this.showingRecycleBin
-                                ? `<button class="flex items-center restore-btn" title="还原" aria-label="还原" data-task-id="${task.id}" data-testid="restore-btn-${task.id}"><span class="material-icons text-sm">restore</span></button>
-                                 <button class="flex items-center delete-btn" title="彻底删除" aria-label="彻底删除" data-task-id="${task.id}" data-testid="delete-btn-${task.id}"><span class="material-icons text-sm scale-102">delete_forever</span></button>`
-                                : `<button class="flex items-center delete-btn" data-task-id="${task.id}" data-testid="delete-btn-${task.id}"><span class="material-icons text-sm scale-102">delete</span></button>
-                                 <button class="flex items-center" title="${task.abandoned ? '\u6062\u590d\u4efb\u52a1' : '\u5e9f\u5f03\u4efb\u52a1'}" onclick="taskManager.toggleAbandoned(${task.id})" data-testid="abandon-btn-${task.id}" style="opacity:${task.abandoned ? 1 : 0.45};">
-                                   <span class="material-icons text-sm" style="color:${task.abandoned ? '#f97316' : 'currentColor'}">${task.abandoned ? 'undo' : 'block'}</span>
-                                 </button>`
-                            }
-                        </div>
-                    </div>
-                </div>
-                <div class="flex items-center justify-between gap-1" style="transform:translateY(-5px);">
-                    <p class="text-sm" style="color: inherit; opacity: 0.9; margin:4px 0 8px;">${typeName} · ${sourceName}</p>
-                    <div class="task-dates" style="margin:4px 4px 8px; text-align:right;">
-                      ${
-                        task.completedAt
-                          ? `<div class="deadline-date deadline-date--completed">已完成: ${
-                              this.dateOnlyDeadlineMode
-                                ? new Date(task.completedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" })
-                                : new Date(task.completedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
-                            }</div>`
-                          : task.deadline
-                          ? `<div data-deadline-status="${
-                              (deadlineStatus && deadlineStatus.status) ||
-                              "normal"
-                            }" class="deadline-date">截止: ${
-                              this.dateOnlyDeadlineMode
-                                ? new Date(task.deadline).toLocaleString("zh-CN", {
-                                    month: "2-digit",
-                                    day: "2-digit",
-                                  })
-                                : new Date(task.deadline).toLocaleString("zh-CN", {
-                                    month: "2-digit",
-                                    day: "2-digit",
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })
-                            }</div>`
-                          : ""
-                      }
-                    </div>
-                </div>
-              </div>
-               <!-- 数值区 --> 
-               <div class="task-card-body pt-0 overflow-hidden" style="background: ${bodyBg}; padding: 1.5rem; padding-top: 0; border-bottom-left-radius: 1rem; border-bottom-right-radius: 1rem;">
-                <div class="flex items-center gap-1 mt-2 mb-2">
-                <!-- 数值模块同一行显示 -->
-                      ${
-                        // 废弃任务优先显示废弃徽章
-                        task.abandoned
-                          ? `<div class="flex items-center"><div class="deadline-badge" data-status="abandoned">已废弃</div></div>`
-                          : task.completed
-                          ? `<div class="flex items-center"><div class="deadline-badge" data-status="completed">已完成</div></div>`
-                          : task.deadline
-                          ? `<div class="flex items-center"><div class="deadline-badge" data-status="${
-                              deadlineStatus?.status || "normal"
-                            }">${deadlineStatus?.text || ""}</div></div>`
-                          : ""
-                      }
-                      <!-- 链式 pill 已移除（BarView 中仍可见） -->
-                    ${
-                      dailyTime && !task.completed && !task.abandoned
-                        ? `<div class="daily-time-badge" data-variant="daily-time">${
-                            dailyTime.hours || "?"
-                          }h/天</div>`
-                        : ""
-                    }
-                    ${
-                      paymentInfo && !task.abandoned
-                        ? `<div class="daily-time-badge" data-variant="payment-status" data-payment-variant="${paymentInfo.variant}">${paymentInfo.label}</div>`
-                        : !task.abandoned && hasPayment
-                        ? `<div class="daily-time-badge" data-variant="daily-time">¥${task.payment || "?"}</div>`
-                        : ""
-                    }
-                    ${
-                      (hasPayment || netIncome > 0) && !task.abandoned
-                        ? `<div class="daily-time-badge" data-variant="daily-time">¥${hourlyRate || "?"}/h</div>`
-                        : ""
-                    }
-                    ${
-                      task.paused
-                        ? `<div class="daily-time-badge" data-variant="paused">暂停中</div>`
-                        : ""
-                    }
-                </div>
-
-
-
-                ${
-                  hasImage
-                    ? `<div class="mb-2 mt-0"><div class="relative inline-block"><img src="${
-                        task.image
-                      }" alt="${
-                        task.name
-                      }" class="w-full h-auto rounded-lg cursor-pointer hover:opacity-90 transition-opacity" style="${
-                        task.w && task.h
-                          ? `aspect-ratio: ${task.w} / ${task.h};`
-                          : `min-height: 150px;`
-                      } background-color: #f3f4f6;" onclick="taskManager.showImageModal('${
-                        task.image
-                      }', '${task.name}')"></div></div>`
-                    : ""
-                }
-
-                <div class="mb-2">
-                    <div class="flex justify-between items-center gap-2">
-                        <span class="text-base text-stone-600 flex-shrink-0">耗时:</span>
-                        <div class="used-hours-control flex items-center gap-2 flex-1 min-w-0">
-                            <button type="button" class="decrement-hours-btn w-7 h-7 flex items-center justify-center rounded border hover:bg-stone-100" data-task-id="${
-                              task.id
-                            }" aria-label="减少1小时" style="border-color: ${headerBg};">
-                                <span class="material-icons text-sm">remove</span>
-                            </button>
-                            <input 
-                                type="number" 
-                                class="used-hours-input flex-1 w-full min-w-0 p-1 border rounded text-sm text-stone-800 text-center"
-                                data-task-id="${task.id}"
-                                value="${task.actualHours || 0}"
-                                min="0"
-                                style="border-color: ${headerBg};"
-                            >
-                            <button type="button" class="increment-hours-btn w-7 h-7 flex items-center justify-center rounded border hover:bg-stone-100" data-task-id="${
-                              task.id
-                            }" aria-label="增加1小时" style="border-color: ${headerBg};">
-                                <span class="material-icons text-sm">add</span>
-                            </button>
-                        </div>
-                        <span class="text-base text-stone-600 flex-shrink-0">小时</span>
-                    </div>
-
-                    <div class="flex-1 bg-stone-200 rounded-full h-3 overflow-hidden mt-2">
-                        <div 
-                            class="progress-bar h-full rounded-full transition-all duration-300" data-level="${progressLevel}" 
-                            style="width: ${progressPercentage}%"
-                        ></div>
-                    </div>
-                </div>
-
-                
-                ${
-                  hasNodes
-                    ? `<div class="mt-3 mb-3"><div class="text-sm text-stone-600 mb-2">任务节点</div><div class="space-y-1">${task.nodes
-                        .map((node) => {
-                          const pres = this.getNodePresentation(node);
-                          const { icon, background, textClass, iconClass } =
-                            pres;
-                          return `<div class="node-item ${
-                            node.completed ? "completed" : ""
-                          } ${
-                            !node.completed && !task.completed ? "active" : ""
-                          } pl-3 py-1 rounded" data-node="${
-                            node.name
-                          }"><label class="flex items-center cursor-pointer gap-1" data-testid="node-${
-                            task.id
-                          }-${node.id}"><input type="checkbox" ${
-                            node.completed ? "checked" : ""
-                          } class="mr-2" data-task-id="${
-                            task.id
-                          }" data-node-id="${
-                            node.id
-                          }" onchange="taskManager.toggleNodeComplete(${
-                            task.id
-                          }, ${node.id})">${
-                            icon
-                              ? `<span class="${iconClass} text-sm">${icon}</span>`
-                              : ""
-                          }<span class="text-sm ${
-                            node.completed ? "line-through" : ""
-                          } node-name">${node.name}</span></label></div>`;
-                        })
-                        .join("")}</div></div>`
-                    : ""
-                }
-                
-                ${this.getTimerButton(task)}
-            </div>
-            </div>
-        `;
+    // 卡片 HTML 由 scripts/task-card-shared.js 统一渲染（与 BarView 同源）
+    return window.taskCardShared.createTaskCardHtml(task, {
+      taskTypes: this.taskTypes,
+      sourcePlatforms: this.sourcePlatforms,
+      presetNodes: this.presetNodes,
+      computeLightBgFromHex: (hex) => this.computeLightBgFromHex(hex),
+      blendWithWhite: (color, percent) => this.blendWithWhite(color, percent),
+      getDeadlineStatus: (deadline) => this.getDeadlineStatus(deadline),
+      calculateDailyTime: (...args) => this.calculateDailyTime(...args),
+      getNodePresentation: (node) => this.getNodePresentation(node),
+      getTimerButton: (t) => this.getTimerButton(t),
+      cardBodyWhiteBlend: this.cardBodyWhiteBlend,
+      dateOnlyDeadlineMode: !!this.dateOnlyDeadlineMode,
+      showingRecycleBin: !!this.showingRecycleBin,
+    });
   }
   // 局部更新单张卡片，不替换 DOM 节点，尽量避免触发 Masonry 重排
   updateTaskCard(task) {
@@ -4260,7 +3632,7 @@ class TaskManager {
     if (datesContainer) {
       let deadlineHtml = "";
       if (task.completed && task.completedAt) {
-        const d = new Date(task.completedAt);
+        const d = window.taskTime.parseOrInvalid(task.completedAt);
         deadlineHtml = `<div class="deadline-date deadline-date--completed">已完成: ${this.dateOnlyDeadlineMode ? d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit" }) : d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>`;
       } else if (task.deadline) {
         deadlineHtml = `<div data-deadline-status="${
@@ -4269,11 +3641,11 @@ class TaskManager {
           "normal"
         }" class="deadline-date">截止: ${
           this.dateOnlyDeadlineMode
-            ? new Date(task.deadline).toLocaleString("zh-CN", {
+            ? window.taskTime.parseOrInvalid(task.deadline).toLocaleString("zh-CN", {
                 month: "2-digit",
                 day: "2-digit",
               })
-            : new Date(task.deadline).toLocaleString("zh-CN", {
+            : window.taskTime.parseOrInvalid(task.deadline).toLocaleString("zh-CN", {
                 month: "2-digit",
                 day: "2-digit",
                 hour: "2-digit",
@@ -4369,19 +3741,6 @@ class TaskManager {
     }
   }
 
-  // 绑定任务卡片上的各种事件
-  bindTaskEvents() {
-    const taskList = document.getElementById("task-list");
-
-    // 确保父容器存在
-    if (!taskList) return;
-
-    // click 事件的处理器由 constructor 创建引用，并在 init() 中只绑定一次，
-    // 以避免重复绑定导致的多次触发。
-
-    // 监听输入框的变化事件（用于调整已用工时）
-    // change 处理器在 init() 中仅绑定一次：使用 `_onTaskListChange`
-  }
   // 调整已用工时
   adjustHours(taskId, hoursChange) {
     const task = this.tasks.find((t) => t.id === taskId);
@@ -4434,21 +3793,26 @@ class TaskManager {
             </div>
         `;
     document.body.appendChild(dialogEl);
-    dialogEl.querySelector(".confirm-cancel").addEventListener("click", () => {
-      document.body.removeChild(dialogEl);
-    });
+    const close = () => {
+      if (dialogEl && dialogEl.parentNode) dialogEl.parentNode.removeChild(dialogEl);
+    };
+    const cancel = () => {
+      try {
+        options.onCancel && options.onCancel();
+      } finally {
+        close();
+      }
+    };
+    dialogEl.querySelector(".confirm-cancel").addEventListener("click", cancel);
     dialogEl.querySelector(".confirm-ok").addEventListener("click", () => {
       try {
         onConfirm && onConfirm();
       } finally {
-        if (dialogEl && dialogEl.parentNode)
-          dialogEl.parentNode.removeChild(dialogEl);
+        close();
       }
     });
     dialogEl.addEventListener("click", (e) => {
-      if (e.target === dialogEl) {
-        document.body.removeChild(dialogEl);
-      }
+      if (e.target === dialogEl) cancel();
     });
   }
   showMessage(message) {
@@ -4686,14 +4050,10 @@ class TaskManager {
       // 计算对比安全的 ring 色
       let inlineStyle = `background:${bg};`;
       if (isActive) {
-        try {
-          // 使用 OKLCH 算法计算 ring 色（无回退，面向现代浏览器）
-          const ok = this.computeOklchAdjustedRing(type.color);
-          if (ok && ok.oklch) {
-            inlineStyle += ` --tw-ring-color: ${ok.oklch}; box-shadow: 0 8px 15px rgba(0,0,0,0.1), inset 0 0 0 2px var(--tw-ring-color);`;
-          }
-        } catch (e) {
-          /* ignore */
+                // 使用 OKLCH 算法计算 ring 色（无回退，面向现代浏览器）
+        const ok = this.computeOklchAdjustedRing(type.color);
+        if (ok && ok.oklch) {
+          inlineStyle += ` --tw-ring-color: ${ok.oklch}; box-shadow: 0 8px 15px rgba(0,0,0,0.1), inset 0 0 0 2px var(--tw-ring-color);`;
         }
       }
       statsHTML += `
@@ -4795,23 +4155,19 @@ class TaskManager {
       cards.forEach((card) => {
         const typeId = card.dataset.typeFilter;
         card.addEventListener("mouseenter", (ev) => {
-          try {
-            const bg = getComputedStyle(card).backgroundColor;
-            // 对于 "全部" 卡片不强制 ring 色，直接返回
-            if (!typeId || typeId === "all") return;
-            const t = this.taskTypes.find((tt) => tt.id === typeId);
-            if (!t) return;
-            // 优先使用基于 OKLCH 的 ring 调整（若浏览器支持），否则回退到对比度安全的 RGB
-            const ok = this.computeOklchAdjustedRing(t.color);
-            // 如果当前卡片已被选中（有 inline box-shadow），不覆盖选中样式
-            if (this.currentFilter === typeId) return;
-            // 直接使用 OKLCH 字符串（项目面向新浏览器，无需回退）
-            if (ok && ok.oklch) {
-              card.style.setProperty("--tw-ring-color", ok.oklch);
-              card.style.boxShadow = `0 8px 15px rgba(0,0,0,0.1), inset 0 0 0 2px var(--tw-ring-color)`;
-            }
-          } catch (e) {
-            // 回退情形不做额外处理
+                    const bg = getComputedStyle(card).backgroundColor;
+          // 对于 "全部" 卡片不强制 ring 色，直接返回
+          if (!typeId || typeId === "all") return;
+          const t = this.taskTypes.find((tt) => tt.id === typeId);
+          if (!t) return;
+          // 优先使用基于 OKLCH 的 ring 调整（若浏览器支持），否则回退到对比度安全的 RGB
+          const ok = this.computeOklchAdjustedRing(t.color);
+          // 如果当前卡片已被选中（有 inline box-shadow），不覆盖选中样式
+          if (this.currentFilter === typeId) return;
+          // 直接使用 OKLCH 字符串（项目面向新浏览器，无需回退）
+          if (ok && ok.oklch) {
+            card.style.setProperty("--tw-ring-color", ok.oklch);
+            card.style.boxShadow = `0 8px 15px rgba(0,0,0,0.1), inset 0 0 0 2px var(--tw-ring-color)`;
           }
         });
         card.addEventListener("mouseleave", () => {
@@ -4834,17 +4190,11 @@ class TaskManager {
 
     // 临时缓冲：弹窗内的编辑只作用于这两个数组，点击保存时写回主数据
     this._modalTaskTypes =
-      typeof structuredClone === "function"
-        ? structuredClone(this.taskTypes || [])
-        : JSON.parse(JSON.stringify(this.taskTypes || []));
+      structuredClone(this.taskTypes || []);
     this._modalSourcePlatforms =
-      typeof structuredClone === "function"
-        ? structuredClone(this.sourcePlatforms || [])
-        : JSON.parse(JSON.stringify(this.sourcePlatforms || []));
+      structuredClone(this.sourcePlatforms || []);
     this._modalPresetNodes =
-      typeof structuredClone === "function"
-        ? structuredClone(this.presetNodes || [])
-        : JSON.parse(JSON.stringify(this.presetNodes || []));
+      structuredClone(this.presetNodes || []);
 
     const modalHTML = `
             <div id="type-management-modal" class="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -5111,11 +4461,7 @@ class TaskManager {
         }
       });
     });
-    try {
-      this.bindPresetNodeManagementEvents();
-    } catch (e) {
-      console.warn("bind preset node management events failed", e);
-    }
+    this.bindPresetNodeManagementEvents();
     const cancelBtn = document.getElementById("cancel-type-management-btn");
     if (cancelBtn) {
       cancelBtn.addEventListener("click", () => this.hideTypeManagementModal());
@@ -5131,11 +4477,7 @@ class TaskManager {
       this.bindOverlayClose(modal, () => this.hideTypeManagementModal());
     }
     // 初始化拖拽排序（类型 / 来源 / 预设节点）
-    try {
-      this.initTypeAndSourceDragSorting();
-    } catch (e) {
-      console.warn("initTypeAndSourceDragSorting error", e);
-    }
+    this.initTypeAndSourceDragSorting();
   }
   // 绑定预设快速节点管理事件
   bindPresetNodeManagementEvents() {
@@ -5318,11 +4660,7 @@ class TaskManager {
         this.createPresetNodeManagementItem(newNode)
       );
     }
-    try {
-      this.initTypeAndSourceDragSorting();
-    } catch (e) {
-      console.warn("re-init drag after add preset node", e);
-    }
+    this.initTypeAndSourceDragSorting();
     nameInput.value = "";
     bgInput.value = background;
     // 更新新节点的图标预览（保持与选择一致）
@@ -5337,11 +4675,7 @@ class TaskManager {
       )} text-base ${text}`;
       span.textContent = newNode.icon;
     }
-    try {
-      this.initTypeAndSourceDragSorting();
-    } catch (e) {
-      console.warn("re-init drag after add preset node", e);
-    }
+    this.initTypeAndSourceDragSorting();
     this.showMessage("节点已添加，请点击保存");
   }
 
@@ -5615,11 +4949,7 @@ class TaskManager {
     nameInput.value = "";
     colorInput.value = "#4ECDC4";
     this.showMessage("类型已添加，请点击保存");
-    try {
-      this.initTypeAndSourceDragSorting();
-    } catch (e) {
-      console.warn("re-init drag after add type", e);
-    }
+    this.initTypeAndSourceDragSorting();
   }
   deleteTaskType(typeId) {
     const hasTasks = this.tasks.some((task) => task.type === typeId);
@@ -5720,11 +5050,7 @@ class TaskManager {
 
     // 如果页面设置面板打开，刷新色块预览
     if (document.getElementById("page-settings-modal")) {
-      try {
-        this.renderPageSettingsSwatches();
-      } catch (e) {
-        console.warn("刷新页面设置色块失败", e);
-      }
+      this.renderPageSettingsSwatches();
     }
     // ✅ 6. 关闭弹窗
     this.hideTypeManagementModal();
@@ -5783,11 +5109,7 @@ class TaskManager {
     nameInput.value = "";
     colorInput.value = "#FF6B6B";
     this.showMessage("平台已添加，请点击保存");
-    try {
-      this.initTypeAndSourceDragSorting();
-    } catch (e) {
-      console.warn("re-init drag after add source", e);
-    }
+    this.initTypeAndSourceDragSorting();
   }
   deleteSourcePlatform(sourceId) {
     const hasTasks = this.tasks.some((task) => task.source === sourceId);
@@ -6260,19 +5582,15 @@ class TaskManager {
         });
 
         // 同步更新统计卡片背景（按类型）
-        try {
-          const stats = document.querySelectorAll(".stats-card");
-          stats.forEach((sc) => {
-            const tf = sc.getAttribute("data-type-filter");
-            if (!tf || tf === "all") return;
-            const t = this.taskTypes.find((tt) => tt.id === tf);
-            const hex = t ? t.color : "#95A5A6";
-            const sbg = this.computeLightBgFromHex(hex, s, v);
-            if (sbg && sc.style.background !== sbg) sc.style.background = sbg;
-          });
-        } catch (e) {
-          // 忽略单张卡片统计错误
-        }
+                const stats = document.querySelectorAll(".stats-card");
+        stats.forEach((sc) => {
+          const tf = sc.getAttribute("data-type-filter");
+          if (!tf || tf === "all") return;
+          const t = this.taskTypes.find((tt) => tt.id === tf);
+          const hex = t ? t.color : "#95A5A6";
+          const sbg = this.computeLightBgFromHex(hex, s, v);
+          if (sbg && sc.style.background !== sbg) sc.style.background = sbg;
+        });
       } catch (e) {
         console.warn("updateCardBackgrounds error", e);
       }
@@ -6307,11 +5625,7 @@ class TaskManager {
         }
       });
       // 实时预览
-      try {
-        this.renderPageSettingsSwatches();
-      } catch (e) {
-        console.warn(e);
-      }
+      this.renderPageSettingsSwatches();
     };
 
     // 初始化并监听输入（触发一次同步渲染）
@@ -6339,11 +5653,7 @@ class TaskManager {
         this.showQuickAddInputs = !!quickAddToggle.checked;
         this.renderTaskTypeOptions();
         this.renderSourceOptions();
-        try {
-          await this.saveAllData();
-        } catch (e) {
-          console.warn("保存快捷添加开关失败", e);
-        }
+        await this.saveAllData();
       });
     }
 
@@ -6351,11 +5661,7 @@ class TaskManager {
     if (hideLastMonthToggle) {
       hideLastMonthToggle.addEventListener("change", async () => {
         this.hideCompletedBeforeLastMonth = !!hideLastMonthToggle.checked;
-        try {
-          await this.saveAllData();
-        } catch (e) {
-          console.warn("保存 hideCompletedBeforeLastMonth 失败", e);
-        }
+        await this.saveAllData();
         // 立即刷新视图并更新统计
         try {
           this.renderTasks();
@@ -6375,11 +5681,7 @@ class TaskManager {
     if (dateOnlyToggle) {
       dateOnlyToggle.addEventListener("change", async () => {
         this.dateOnlyDeadlineMode = !!dateOnlyToggle.checked;
-        try {
-          await this.saveAllData();
-        } catch (e) {
-          console.warn("保存 dateOnlyDeadlineMode 失败", e);
-        }
+        await this.saveAllData();
         try {
           this.renderTasks();
           this.updateStats();
@@ -6435,11 +5737,7 @@ class TaskManager {
         this.renderTaskTypeOptions();
         this.renderSourceOptions();
         // 立即应用最终的 card body blend 值
-        try {
-          updateCardBackgrounds();
-        } catch (err2) {
-          /* ignore */
-        }
+                updateCardBackgrounds();
         // 如存在则应用已保存的主题选择
         try {
           const themeRadios = document.getElementsByName("theme-select");
@@ -6452,11 +5750,7 @@ class TaskManager {
           console.warn("apply theme failed", e);
         }
         // 重新渲染日历以使 timeline bar 的透明度与设置同步
-        try {
-          this.renderCalendar();
-        } catch (e) {
-          console.warn("刷新日历失败", e);
-        }
+        this.renderCalendar();
       } catch (e) {
         console.error("保存页面设置失败", e);
         this.showMessage("页面设置保存失败");
@@ -6484,6 +5778,7 @@ class TaskManager {
         }
       });
     }
+
 
     document
       .getElementById("close-page-settings-btn")
@@ -6523,21 +5818,17 @@ class TaskManager {
     } catch (e) {
       /* ignore */
     }
-    try {
-      const warm = document.getElementById("theme-warm");
-      const standard = document.getElementById("theme-standard");
-      if (warm)
-        warm.addEventListener("change", () => {
-          if (warm.checked && window.applyTheme) window.applyTheme("warm");
-        });
-      if (standard)
-        standard.addEventListener("change", () => {
-          if (standard.checked && window.applyTheme)
-            window.applyTheme("standard");
-        });
-    } catch (e) {
-      /* ignore */
-    }
+        const warm = document.getElementById("theme-warm");
+    const standard = document.getElementById("theme-standard");
+    if (warm)
+      warm.addEventListener("change", () => {
+        if (warm.checked && window.applyTheme) window.applyTheme("warm");
+      });
+    if (standard)
+      standard.addEventListener("change", () => {
+        if (standard.checked && window.applyTheme)
+          window.applyTheme("standard");
+      });
   }
 
   // 渲染设置面板中的色块预览，最多每行 6 个，动态跟随 this.taskTypes
@@ -6646,16 +5937,6 @@ class TaskManager {
 
   // ------- OKLCH 帮助函数 + 颜色辅助（全部委托到 taskUtils）-------
   supportsOKLCH() { return window.taskUtils.supportsOKLCH(); }
-  _srgbToLinear(v) { return window.taskUtils.srgbToLinear(v); }
-  _linearToSrgb(v) { return window.taskUtils.linearToSrgb(v); }
-  _rgbToXyz(r, g, b) { return window.taskUtils.rgbToXyz(r, g, b); }
-  _xyzToOklab(X, Y, Z) { return window.taskUtils.xyzToOklab(X, Y, Z); }
-  _oklabToOklch(oklab) { return window.taskUtils.oklabToOklch(oklab); }
-  _oklchToOklab(oklch) { return window.taskUtils.oklchToOklab(oklch); }
-  _oklabToXyz(oklab) { return window.taskUtils.oklabToXyz(oklab); }
-  _xyzToRgb(X, Y, Z) { return window.taskUtils.xyzToRgb(X, Y, Z); }
-  _hexToOklch(hex) { return window.taskUtils.hexToOklch(hex); }
-  _oklchToRgb(oklch) { return window.taskUtils.oklchToRgb(oklch); }
   computeOklchAdjustedRing(hex) { return window.taskUtils.computeOklchAdjustedRing(hex); }
   computeRingFromHex(hex, deltaS = 0.5, deltaV = 0) { return window.taskUtils.computeRingFromHex(hex, deltaS, deltaV); }
   luminanceFromRgb(rgb) { return window.taskUtils.luminanceFromRgb(rgb); }
@@ -6666,60 +5947,15 @@ class TaskManager {
   _hsvToRgb(h, s, v) { return window.taskUtils.hsvToRgb(h, s, v); }
   parseRgbString(rgbStr) { return window.taskUtils.parseRgbString(rgbStr); }
 
-  // 计算对比安全的 ring 色的函数
-  // 先尝试 deltaV=+0.5，如果与背景亮度差异太小则尝试更暗的方案
-  computeContrastSafeRing(hex, bgRgbString) {
-    try {
-      const ring1 = this.computeRingFromHex(hex, 0.5);
-      const ringRgb = this.parseRgbString(ring1);
-      const bgRgb =
-        this.parseRgbString(bgRgbString) ||
-        this.parseRgbString(this.computeLightBgFromHex(hex));
-      if (!ringRgb || !bgRgb) return ring1;
-      const lumRing = this.luminanceFromRgb(ringRgb);
-      const lumBg = this.luminanceFromRgb(bgRgb);
-      if (Math.abs(lumRing - lumBg) < 0.18) {
-        // 如果 ring 本身是高饱和度且亮度适中的鲜艳颜色，对其做小幅调整（降亮度并微调色相），以保持鲜艳但不太刺眼
-        try {
-          const hsvRingTemp = this._rgbToHsv(ringRgb.r, ringRgb.g, ringRgb.b);
-          if (hsvRingTemp.s >= 0.45 && hsvRingTemp.v >= 0.5) {
-            // 减小亮度 0.05
-            const newV = Math.max(0, hsvRingTemp.v - 0.05);
-            let newH = hsvRingTemp.h;
-            // 黄色区域 50-60 度：调低色相 10 度
-            if (newH >= 50 && newH <= 60) newH = (newH - 10 + 360) % 360;
-            // 黄绿色区域 61-70 度：提高色相 5 度
-            else if (newH >= 61 && newH <= 70) newH = (newH + 5) % 360;
-            const adj = this._hsvToRgb(newH, hsvRingTemp.s, newV);
-            return `rgb(${adj.r}, ${adj.g}, ${adj.b})`;
-          }
-        } catch (e) {
-          /* ignore */
-        }
-        // 尝试更暗的 ring
-        const ring2 = this.computeRingFromHex(hex, -0.4);
-        const ring2Rgb = this.parseRgbString(ring2);
-        if (ring2Rgb) {
-          const lum2 = this.luminanceFromRgb(ring2Rgb);
-          if (Math.abs(lum2 - lumBg) >= 0.18) return ring2;
-        }
-        // 回退：使用半透明黑色作为较稳妥的边框
-        return "rgba(0,0,0,0.18)";
-      }
-      return ring1;
-    } catch (e) {
-      return this.computeRingFromHex(hex, 0.5);
-    }
-  }
   normalizeToDayStart(date) {
-    const d = new Date(date);
+    const d = window.taskTime.parseOrInvalid(date);
     if (Number.isNaN(d.getTime())) return null;
     d.setHours(0, 0, 0, 0);
     return d;
   }
 
   normalizeToDayEnd(date) {
-    const d = new Date(date);
+    const d = window.taskTime.parseOrInvalid(date);
     if (Number.isNaN(d.getTime())) return null;
     d.setHours(23, 59, 59, 999);
     return d;
@@ -7245,13 +6481,6 @@ class TaskManager {
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   }
-  // 格式化为更可读的中文日期：2026年1月17日
-  formatDatePretty(date) {
-    if (!date) return "";
-    const d = date instanceof Date ? date : new Date(date);
-    if (Number.isNaN(d.getTime())) return "";
-    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
-  }
   getTaskStartDateString(task) {
     if (!task) return "";
     const start =
@@ -7259,12 +6488,12 @@ class TaskManager {
         ? task.actualStartTime
         : (task.startTime || task.starttime || task.startDate || task.pausePreDeadline || task.deadline || task.createdAt);
     if (!start) return "";
-    return this.formatDate(new Date(start));
+    return this.formatDate(window.taskTime.parseOrInvalid(start));
   }
   getTasksByDate(dateStr) {
     return this.tasks.filter((task) => {
       if (!task.deadline) return false;
-      const taskDate = new Date(task.deadline);
+      const taskDate = window.taskTime.parseOrInvalid(task.deadline);
       const taskDateStr = this.formatDate(taskDate);
       return taskDateStr === dateStr;
     });
@@ -7272,7 +6501,7 @@ class TaskManager {
   getTasksByDateRange(dateStr) {
     return this.tasks.filter((task) => {
       if (!task.deadline) return false;
-      const end = this.formatDate(new Date(task.deadline));
+      const end = this.formatDate(window.taskTime.parseOrInvalid(task.deadline));
       const start = this.getTaskStartDateString(task) || end;
       return start <= dateStr && dateStr <= end;
     });
@@ -7314,10 +6543,10 @@ class TaskManager {
             parseInt(m[3], 10)
           );
         const n = Date.parse(val);
-        return isNaN(n) ? null : new Date(n);
+        return isNaN(n) ? null : window.taskTime.parseOrInvalid(n);
       }
       const n = Date.parse(val);
-      return isNaN(n) ? null : new Date(n);
+      return isNaN(n) ? null : window.taskTime.parseOrInvalid(n);
     };
     const tasks = this.tasks || [];
     const segMaxRowMap = new Map();
@@ -7353,8 +6582,8 @@ class TaskManager {
     const weekSegments = Array.from({ length: 6 }, () => []);
 
     const clampDate = (d) => {
-      if (d < monthStart) return new Date(monthStart);
-      if (d > monthEnd) return new Date(monthEnd);
+      if (d < monthStart) return window.taskTime.parseOrInvalid(monthStart);
+      if (d > monthEnd) return window.taskTime.parseOrInvalid(monthEnd);
       return d;
     };
 
@@ -7413,32 +6642,32 @@ class TaskManager {
       const calPauseRanges = (() => {
         let crossDayPauses = (task.pauseHistory || []).filter(entry => {
           if (!entry.pausedAt || !entry.resumedAt) return false;
-          const pD = new Date(entry.pausedAt); pD.setHours(0, 0, 0, 0);
-          const rD = new Date(entry.resumedAt); rD.setHours(0, 0, 0, 0);
+          const pD = window.taskTime.parseOrInvalid(entry.pausedAt); pD.setHours(0, 0, 0, 0);
+          const rD = window.taskTime.parseOrInvalid(entry.resumedAt); rD.setHours(0, 0, 0, 0);
           return (rD - pD) / 86400000 > 1;
         });
         // 暂停实时预览：将当前活跃暂停加入虚拟已完成条目
         if (task.paused && task.pausedAt) {
           const today4 = new Date(); today4.setHours(0, 0, 0, 0);
-          const pD4    = new Date(task.pausedAt); pD4.setHours(0, 0, 0, 0);
+          const pD4    = window.taskTime.parseOrInvalid(task.pausedAt); pD4.setHours(0, 0, 0, 0);
           if ((today4 - pD4) / 86400000 > 1) {
             crossDayPauses = [...crossDayPauses,
               { pausedAt: task.pausedAt, resumedAt: today4.toISOString() }];
           }
         }
         if (crossDayPauses.length === 0) return [{ start: startDateParsed, end: visualEnd }];
-        const sorted = [...crossDayPauses].sort((a, b) => new Date(a.pausedAt) - new Date(b.pausedAt));
+        const sorted = [...crossDayPauses].sort((a, b) => window.taskTime.parseOrInvalid(a.pausedAt) - window.taskTime.parseOrInvalid(b.pausedAt));
         const ranges = [];
-        let cur = new Date(startDateParsed);
+        let cur = window.taskTime.parseOrInvalid(startDateParsed);
         for (const entry of sorted) {
-          const pD = new Date(entry.pausedAt); pD.setHours(0, 0, 0, 0);
+          const pD = window.taskTime.parseOrInvalid(entry.pausedAt); pD.setHours(0, 0, 0, 0);
           pD.setDate(pD.getDate() + 1); // 暂停日当天算工作日，次日才开始 gap
-          const rD = new Date(entry.resumedAt); rD.setHours(0, 0, 0, 0);
+          const rD = window.taskTime.parseOrInvalid(entry.resumedAt); rD.setHours(0, 0, 0, 0);
           if (rD <= cur) continue;
-          if (pD > cur) ranges.push({ start: new Date(cur), end: new Date(pD) });
-          cur = new Date(rD);
+          if (pD > cur) ranges.push({ start: window.taskTime.parseOrInvalid(cur), end: window.taskTime.parseOrInvalid(pD) });
+          cur = window.taskTime.parseOrInvalid(rD);
         }
-        if (cur <= visualEnd) ranges.push({ start: cur, end: new Date(visualEnd) });
+        if (cur <= visualEnd) ranges.push({ start: cur, end: window.taskTime.parseOrInvalid(visualEnd) });
         return ranges.length > 0 ? ranges : [{ start: startDateParsed, end: visualEnd }];
       })();
 
@@ -7515,8 +6744,8 @@ class TaskManager {
     if (aStart && bStart && aStart !== bStart) {
       return aStart < bStart ? -1 : 1;
     }
-    const aEnd = a.deadline ? this.formatDate(new Date(a.deadline)) : "";
-    const bEnd = b.deadline ? this.formatDate(new Date(b.deadline)) : "";
+    const aEnd = a.deadline ? this.formatDate(window.taskTime.parseOrInvalid(a.deadline)) : "";
+    const bEnd = b.deadline ? this.formatDate(window.taskTime.parseOrInvalid(b.deadline)) : "";
     if (aEnd && bEnd && aEnd !== bEnd) {
       return aEnd < bEnd ? -1 : 1;
     }
@@ -7532,7 +6761,7 @@ class TaskManager {
     const title = document.getElementById("date-tasks-title");
     const list = document.getElementById("date-tasks-list");
     const empty = document.getElementById("date-tasks-empty");
-    const date = new Date(dateStr);
+    const date = window.taskTime.parseOrInvalid(dateStr);
     title.textContent = `${date.getFullYear()}年 ${
       date.getMonth() + 1
     }月 ${date.getDate()}日 ${
@@ -7557,6 +6786,7 @@ class TaskManager {
               : 0;
 
           const hasImage = task.image && task.image.trim() !== "";
+          const imgSrc = hasImage ? window.taskUtils.resolveImageSrc(task.image) : "";
           const hasPayment = task.payment && task.payment > 0;
           const hourlyRate = hasPayment
             ? task.completed
@@ -7590,15 +6820,13 @@ class TaskManager {
                         
                         ${
                           hasImage
-                            ? `<div class="mb-2"><img src="${task.image}"alt="${task.name}"class="max-w-full h-20 object-cover rounded cursor-pointer hover:opacity-90 transition-opacity"onclick="taskManager.showImageModal('${task.image}', '${task.name}')"style="max-width: 150px;"></div>`
+                            ? `<div class="mb-2"><img src="${imgSrc}" alt="${task.name}" class="max-w-full h-20 object-cover rounded cursor-pointer hover:opacity-90 transition-opacity" onclick="taskManager.showImageModal('${imgSrc}', '${task.name}')" style="max-width: 150px;"></div>`
                             : ""
                         }
                         
                         ${
                           task.deadline
-                            ? `<div class="flex items-center text-xs text-stone-500 mb-2"><span class="material-icons text-xs mr-1">schedule</span>${new Date(
-                                task.deadline
-                              ).toLocaleString("zh-CN", {
+                            ? `<div class="flex items-center text-xs text-stone-500 mb-2"><span class="material-icons text-xs mr-1">schedule</span>${window.taskTime.parseOrInvalid(task.deadline).toLocaleString("zh-CN", {
                                 hour: "2-digit",
                                 minute: "2-digit",
                               })}</div>`
@@ -7766,6 +6994,12 @@ class TaskManager {
         this.toggleCollapse("monthly-stats");
       });
     }
+    const pricingToggle = document.getElementById("pricing-analysis-toggle");
+    if (pricingToggle) {
+      pricingToggle.addEventListener("click", () => {
+        this.toggleCollapse("pricing-analysis");
+      });
+    }
     this.initCollapseStates();
   }
   toggleCollapse(section) {
@@ -7821,6 +7055,8 @@ class TaskManager {
       localStorage.getItem("recommendations-collapsed") === "true";
     const monthlyStatsCollapsed =
       localStorage.getItem("monthly-stats-collapsed") === "true";
+    const pricingCollapsed =
+      localStorage.getItem("pricing-analysis-collapsed") === "true";
     const calendarContent = document.getElementById("calendar-content");
     const calendarChevron = document.getElementById("calendar-chevron");
     if (calendarContent && calendarChevron) {
@@ -7888,12 +7124,26 @@ class TaskManager {
         monthlyStatsChevron.classList.remove("rotated");
       }
     }
+    const pricingContent = document.getElementById("pricing-analysis-content");
+    const pricingChevron = document.getElementById("pricing-analysis-chevron");
+    if (pricingContent && pricingChevron) {
+      if (pricingCollapsed) {
+        pricingContent.classList.add("collapsed");
+        pricingContent.style.maxHeight = "0";
+        pricingChevron.textContent = "expand_more";
+        pricingChevron.classList.add("rotated");
+      } else {
+        pricingContent.classList.remove("collapsed");
+        pricingChevron.textContent = "expand_less";
+        pricingChevron.classList.remove("rotated");
+      }
+    }
   }
   isTimerRunning(taskId) {
-    return this.timerTaskId === taskId && this.currentTimer !== null;
+    return this.timer.isRunning(taskId);
   }
   startTimer(taskId) {
-    if (this.currentTimer) {
+    if (this.timer.runningTaskId !== null) {
       this.showMessage("已有任务正在计时，请先结束当前任务计时");
       return;
     }
@@ -7907,145 +7157,59 @@ class TaskManager {
         task.actualStartTime = new Date(Date.now()).toISOString();
       }
       // 立即持久化并更新相关展示
-      try {
-        this.saveAllData();
-      } catch (e) {
-        console.warn("保存 actualStartTime 失败", e);
-      }
+      this.saveAllData();
       // 与预览/卡片同步
       this.refreshTaskPreviewIfOpen(taskId);
       // 检查是否触发加急冲突
-      if (!task.urgentA && task.dependencyType === 'line' && task.startTime &&
-          new Date(task.actualStartTime) < new Date(task.startTime)) {
+      if (task.dependencyType === 'line' && this._needsAcceleratePrompt(task)) {
         this.handleAccelerateConflict(task);
       }
     }
 
-    this.timerTaskId = taskId;
-    this.timerStartTime = Date.now();
-    this.currentTimer = setInterval(() => {
-      this.updateTimerDisplay();
-    }, 1000);
+    this.timer.start(taskId);
     this.showMessage(`开始为任务"${task.name}"计时`);
     this.renderTasks(taskId);
   }
   stopTimer(taskId) {
-    if (this.timerTaskId !== taskId || !this.currentTimer) {
-      return;
-    }
-    const endTime = Date.now();
-    const duration = Math.round((endTime - this.timerStartTime) / 1000);
-    const durationInHours = duration / 3600;
-    clearInterval(this.currentTimer);
-    this.currentTimer = null;
+    const durationInHours = this.timer.stop(taskId);
+    if (durationInHours === null) return;
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task) return;
     this.showTimerDurationDialog(task, durationInHours, () => {
-      this.timerTaskId = null;
-      this.timerStartTime = null;
       this.renderTasks(task.id);
     });
   }
-  updateTimerDisplay() {
-    if (!this.currentTimer || !this.timerTaskId) return;
-    const elapsed = Math.round((Date.now() - this.timerStartTime) / 1000);
-    const hours = Math.floor(elapsed / 3600);
-    const minutes = Math.floor((elapsed % 3600) / 60);
-    const seconds = elapsed % 60;
-  }
-  // 显示计时结束对话框，允许用户调整时长并保存
+  // 显示计时结束对话框，允许用户调整时长并保存（UI 由 task-card-shared 统一提供）
   showTimerDurationDialog(task, durationInHours, onClose) {
-    const dialogEl = document.createElement("div");
-    dialogEl.className =
-      "fixed inset-0 z-50 flex items-center justify-center p-4";
-    dialogEl.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-    const hours = Math.floor(durationInHours);
-    const minutes = Math.round((durationInHours - hours) * 60);
-    dialogEl.innerHTML = `
-            <div class="bg-white rounded-xl p-6 max-w-sm w-full">
-                <div class="mb-4">
-                    <h3 class="text-lg font-semibold text-stone-800 mb-2">计时结束</h3>
-                    <p class="text-stone-600 mb-3">任务"${task.name}"的计时时长</p>
-                    <div class="flex items-center gap-2">
-                           <input type="number" id="timer-hours" class="w-20 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none" 
-                               value="${hours}" min="0" max="999" data-testid="timer-hours-input">
-                        <span class="text-stone-600">小时</span>
-                           <input type="number" id="timer-minutes" class="w-20 px-3 py-2 border border-stone-300 rounded-lg focus:outline-none" 
-                               value="${minutes}" min="0" max="59" data-testid="timer-minutes-input">
-                        <span class="text-stone-600">分钟</span>
-                    </div>
-                </div>
-                <div class="flex gap-3">
-                    <button class="timer-cancel flex-1 px-4 py-2 border border-stone-300 rounded-lg hover:bg-stone-50 transition-colors" data-testid="timer-cancel-btn">
-                        取消
-                    </button>
-                    <button class="timer-save flex-1 px-4 py-2 btn-save" data-testid="timer-save-btn">
-                      保存
-                    </button>
-                </div>
-            </div>
-        `;
-    document.body.appendChild(dialogEl);
-    dialogEl.querySelector(".timer-cancel").addEventListener("click", () => {
-      document.body.removeChild(dialogEl);
-      onClose();
-    });
-    dialogEl
-      .querySelector(".timer-save")
-      .addEventListener("click", async () => {
+    window.taskCardShared.showTimerDurationDialog(task, durationInHours, {
+      onCancel: () => onClose(),
+      onConfirm: async (totalHours) => {
         try {
-          const hoursInput = dialogEl.querySelector("#timer-hours");
-          const minutesInput = dialogEl.querySelector("#timer-minutes");
-          const totalHours =
-            parseFloat(hoursInput.value) + parseFloat(minutesInput.value) / 60;
-          if (totalHours > 0) {
-            // 若尚未记录 actualStartTime，则在计时保存时记一次（防止用户忘记手动填写）
-            if (!task.actualStartTime) {
-              try {
-                task.actualStartTime = new Date().toISOString();
-              } catch (e) {
-                task.actualStartTime = new Date(Date.now()).toISOString();
-              }
-            }
-            task.actualHours = (task.actualHours || 0) + totalHours;
-            if (task.completed) {
-              task.completedHours = task.actualHours;
-              this.recordCompletionStatistics(task);
-            }
-            // 如果 saveAllData 返回 Promise，等待其完成；否则也不会有问题
-            try {
-              await this.saveAllData();
-            } catch (err) {
-              console.error("saveAllData error:", err);
-            }
-            this.updateStats();
-            this.updateSmartRecommendations();
-            this.renderTasks(task.id);
-            this.updateMonthlyStatsDisplay();
-            this.refreshTaskPreviewIfOpen(task.id);
-            this.showMessage(
-              `已为任务"${task.name}"添加 ${totalHours.toFixed(2)} 小时工时`
-            );
+          // 若尚未记录 actualStartTime，则在计时保存时记一次（防止用户忘记手动填写）
+          if (!task.actualStartTime) {
+            task.actualStartTime = new Date().toISOString();
           }
+          task.actualHours = (task.actualHours || 0) + totalHours;
+          if (task.completed) {
+            task.completedHours = task.actualHours;
+            this.recordCompletionStatistics(task);
+          }
+          await this.saveAllData();
+          this.updateStats();
+          this.updateSmartRecommendations();
+          this.renderTasks(task.id);
+          this.updateMonthlyStatsDisplay();
+          this.refreshTaskPreviewIfOpen(task.id);
+          this.showMessage(
+            `已为任务"${task.name}"添加 ${totalHours.toFixed(2)} 小时工时`
+          );
         } catch (err) {
           console.error("timer-save handler error:", err);
           this.showMessage("保存计时信息时发生错误");
         } finally {
-          if (document.body.contains(dialogEl)) {
-            document.body.removeChild(dialogEl);
-          }
-          try {
-            onClose();
-          } catch (err) {
-            console.error("onClose callback error:", err);
-          }
+          onClose();
         }
-      });
-    dialogEl.addEventListener("click", (e) => {
-      if (e.target === dialogEl) {
-        document.body.removeChild(dialogEl);
-        onClose();
-      }
+      },
     });
   }
   toggleTimer(taskId) {
@@ -8069,14 +7233,7 @@ class TaskManager {
     if (this.isTimerRunning(taskId)) {
       this.stopTimer(taskId);
     }
-    // 暂停实时预览：首次暂停时保存原始 deadline
-    if (task.deadline && !task.pausePreDeadline) {
-      task.pausePreDeadline = task.deadline;
-    }
-    task.paused = true;
-    task.pausedAt = new Date().toISOString();
-    if (!Array.isArray(task.pauseHistory)) task.pauseHistory = [];
-    task.pauseHistory.push({ pausedAt: task.pausedAt });
+    window.taskCardShared.pauseTaskData(task);
     this.saveAllData();
     this.renderTasks(taskId);
     this.refreshTaskPreviewIfOpen(taskId);
@@ -8086,27 +7243,7 @@ class TaskManager {
   resumeTask(taskId) {
     const task = this.tasks.find((t) => t.id === taskId);
     if (!task || !task.paused) return;
-    const now = new Date();
-    const pausedAt = new Date(task.pausedAt);
-    const pausedMs = now.getTime() - pausedAt.getTime();
-    const pausedDays = pausedMs / (24 * 60 * 60 * 1000);
-    task.totalPausedDays = (task.totalPausedDays || 0) + pausedDays;
-    // 自动顺延 deadline（使用 pausePreDeadline 作为基准，避免与 livePreviewCurrentPause 双计）
-    const baseDeadline4Resume = task.pausePreDeadline
-      ? new Date(task.pausePreDeadline)
-      : (task.deadline ? new Date(task.deadline) : null);
-    if (baseDeadline4Resume && !isNaN(baseDeadline4Resume.getTime())) {
-      baseDeadline4Resume.setTime(baseDeadline4Resume.getTime() + pausedMs);
-      task.deadline = this.formatDateTimeLocal(baseDeadline4Resume);
-    }
-    task.pausePreDeadline = undefined;
-    // 填充 pauseHistory 的 resumedAt
-    if (Array.isArray(task.pauseHistory) && task.pauseHistory.length > 0) {
-      const last = task.pauseHistory[task.pauseHistory.length - 1];
-      if (!last.resumedAt) last.resumedAt = now.toISOString();
-    }
-    task.paused = false;
-    task.pausedAt = null;
+    window.taskCardShared.resumeTaskData(task);
     // 递归顺延后续链式任务
     this.adjustChainFrom(task);
     this.saveAllData();
@@ -8284,25 +7421,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // 如果 TaskManager 提供 init/initCalendar，则尝试调用（含安全保护）
   if (typeof window.taskManager.init === "function") {
-    try {
-      window.taskManager.init();
-    } catch (e) {
-      console.warn("taskManager.init error:", e);
-    }
+    window.taskManager.init();
   } else if (typeof window.taskManager.initCalendar === "function") {
-    try {
-      window.taskManager.initCalendar();
-    } catch (e) {
-      console.warn("taskManager.initCalendar error:", e);
-    }
+    window.taskManager.initCalendar();
   }
 
   // 确保在实例存在后再运行图片等待与观察逻辑
-  try {
-    window.taskManager.waitForImagesAndLayout();
-  } catch (e) {
-    console.warn("waitForImagesAndLayout error:", e);
-  }
+  window.taskManager.waitForImagesAndLayout();
   //不知道有什么用而且会报错，删了可能会有bug
   //try { enableResizeDrivenLayout(); } catch (e) { console.warn("enableResizeDrivenLayout error:", e); }
 });

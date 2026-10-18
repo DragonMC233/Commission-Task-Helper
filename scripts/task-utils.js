@@ -437,6 +437,30 @@
     };
   };
 
+  // ======== 图片路径工具 ========
+  // 数据里存的是相对 BASE_DIR 的路径（"pic/xxx.png" / "RecyclePic/xxx.png"）。
+  // MainView 有 <base href="/MainView/">，BarView 挂在 /BarView/ 下，
+  // 所以渲染前必须统一转成根绝对路径，否则会 404。
+
+  /** 归一化成不带前导 ./ 或 / 的相对路径；http(s)/data/blob 原样返回 */
+  const normalizeImagePath = (image) => {
+    if (typeof image !== "string") return "";
+    const p = image.trim().replace(/\\/g, "/");
+    if (/^(https?:|data:|blob:)/i.test(p)) return p;
+    return p.replace(/^\.?\/*/, "");
+  };
+
+  /** 图片路径 → 可直接放进 src 的 URL */
+  const resolveImageSrc = (image) => {
+    const p = normalizeImagePath(image);
+    if (!p) return "";
+    if (/^(https?:|data:|blob:)/i.test(p)) return p;
+    return "/" + p;
+  };
+
+  /** 是否为回收站中的图片（大小写不敏感：RecyclePic / recyclepic 两种历史写法都认） */
+  const isRecycleImage = (image) => /^recyclepic\//i.test(normalizeImagePath(image));
+
   window.taskUtils = Object.assign(window.taskUtils || {}, {
     // 颜色转换
     hexToRgb,
@@ -469,5 +493,9 @@
     // UI 工具
     getIconClassForSource,
     defaultGetNodePresentation,
+    // 图片路径
+    normalizeImagePath,
+    resolveImageSrc,
+    isRecycleImage,
   });
 })();

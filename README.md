@@ -31,10 +31,35 @@ task-helper/
 ├── Statistics.json         # 任务统计数据
 ├── basetype.json           # 默认类型/平台/节点预设
 ├── StartServer.py          # Flask 后端服务器启动脚本
+├── upgrade_data.py         # 数据格式升级脚本（见下方「从旧版本升级」）
 ├── package.json            # 前端构建工具依赖（Tailwind CSS）
 └── .gitignore
 ```
 
+---
+
+## ⬆️ 从旧版本升级
+
+时间字段的存储格式在 2026-10 有变更：从「无时区的墙上时间 + 纯日期」统一成 **ISO UTC**。
+
+如果你之前已经在用、`index.json` 里还有旧格式（形如 `2026-11-01T20:00` 或 `2027-07-14`），
+更新代码后需要执行一次升级脚本，把数据刷成新格式：
+
+```bash
+python upgrade_data.py
+```
+
+脚本会：
+
+- 把 `index.json`、`Statistics.json`、`BarView/preview.json` 里的时间字段统一成 ISO UTC
+- 无标记的时间按**东八区**换算（旧数据是在东八区录入的）
+- 纯日期 `2027-07-14` 换算成 `2027-07-13T16:00:00.000Z`
+- 写盘前自动备份到 `backup/` 目录
+- **可以重复执行**，已经是 UTC 的字段会跳过
+
+升级后界面显示的日期时间不会变，变的只是文件里的存法。
+
+---
 
  为了防止意外，**请务必定期备份`index.json`文件和`./pic`文件夹**  
 如何清空数据：删除 `index.json`并重启StartServer.py，服务器重启后会根据 `basetype.json` 自动生成新的初始数据。

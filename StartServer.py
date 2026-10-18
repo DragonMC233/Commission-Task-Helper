@@ -10,13 +10,22 @@ import unicodedata
 app = Flask(__name__)
 # 禁止 jsonify 对 key 进行字母排序，保留 index.json 中字段的原有顺序
 app.json.sort_keys = False
+# 上传体积上限（20MB），超出由 Flask 直接返回 413
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 # 基准目录：脚本所在目录，确保在 mac (SMB 挂载) 与 Windows 上都能找到同目录下的资源
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "index.json")
 RECYCLE_FILE = os.path.join(BASE_DIR, "recyclebin.json")
-RECYCLE_PIC_DIR = os.path.join(BASE_DIR, "recyclepic")
+# 目录名与磁盘上的实际大小写保持一致，否则在 Linux 等大小写敏感的文件系统上会失效
+RECYCLE_PIC_DIR = os.path.join(BASE_DIR, "RecyclePic")
 STAT_FILE = os.path.join(BASE_DIR, "Statistics.json")
 PREVIEW_FILE = os.path.join(BASE_DIR, "BarView", "preview.json")
+
+# 允许上传的图片扩展名
+ALLOWED_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif"}
+# 图片回收宽限期（秒）：宽限期内的文件不参与孤儿回收，
+# 覆盖「刚上传还没保存任务」与「取消弹窗后删除失败」这两个窗口期
+IMAGE_GC_GRACE_SECONDS = 3600
 
 # 为提高可移植性：确保进程工作目录为脚本所在目录，并启用 UTF-8 行为
 try:
@@ -28,18 +37,55 @@ os.environ.setdefault('PYTHONUTF8', '1')
 os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
 
+# 需要实时返回的数据接口前缀
+_NO_STORE_PREFIXES = (
+    "/load",
+    "/save",
+    "/upload-image",
+    "/delete-image",
+    "/move-image-to-recycle",
+    "/restore-image-from-recycle",
+)
+# 内容不可变、可以长缓存的静态目录（文件名带时间戳，不会重复）
+_IMMUTABLE_PREFIXES = ("/pic/", "/recyclepic/")
+
+
 @app.after_request
-def add_no_cache_headers(response):
-    # 避免浏览器缓存 /load 与静态脚本，导致“已保存但刷新看不到”
-    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
+def add_cache_headers(response):
+    """按资源类型分层缓存。
+
+    之前对所有响应一律 no-store，连图片和字体也不进缓存；
+    改为：数据接口不缓存，图片长缓存，其余静态资源协商缓存（304）。
+    """
+    path = (request.path or "").lower()
+    if path.startswith(_NO_STORE_PREFIXES):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    elif path.startswith(_IMMUTABLE_PREFIXES):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        # HTML/JS/CSS：允许缓存但要回源校验，改完刷新立刻生效
+        response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+def _is_within(base_dir: str, target: str) -> bool:
+    """target 是否确实位于 base_dir 之内（按分隔符边界判断，防止同级目录前缀穿越）。"""
+    try:
+        base = os.path.normcase(os.path.abspath(base_dir))
+        tgt = os.path.normcase(os.path.abspath(target))
+        return os.path.commonpath([base, tgt]) == base
+    except (OSError, ValueError):
+        return False
 
 
 def _resolve_case_insensitive(base_dir: str, relative_path: str):
     """Resolve a path ignoring case per segment (helps on case-sensitive FS)."""
-    parts = [p for p in relative_path.replace('\\', '/').split('/') if p not in ('', '.')]
+    raw_parts = relative_path.replace('\\', '/').split('/')
+    if any(p == '..' for p in raw_parts):
+        return None
+    parts = [p for p in raw_parts if p not in ('', '.')]
     cur = base_dir
     for part in parts:
         try:
@@ -91,7 +137,10 @@ def load_data():
 # ✅ 保存 JSON（不处理图片）
 @app.route('/save', methods=['POST'])
 def save():
-    data = request.json
+    # body 不是合法 JSON 时 request.json 会返回 None，提前挡掉避免 500
+    data = request.get_json(force=True, silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "error": "invalid_json"}), 400
 
     # 读取旧 DB（若存在），用于在前端未显式提供 image 字段时保留旧引用
     old_db = {}
@@ -237,12 +286,12 @@ def serve_index():
 @app.route("/<path:path>")
 def serve_static(path):
     # 从脚本目录提供静态文件，防止当前工作目录差异导致找不到文件
-    # 阻止目录穿越
+    # 阻止目录穿越（用分隔符边界判断，避免 ../task-helper2 这类同级目录混进来）
     safe_base = BASE_DIR
     # 规范化 URL 中的斜杠以适配不同平台
     requested = path.replace('/', os.sep)
     full_path = os.path.abspath(os.path.join(safe_base, requested))
-    if not full_path.startswith(safe_base):
+    if not _is_within(safe_base, full_path):
         abort(403)
 
     if os.path.exists(full_path) and os.path.isfile(full_path):
@@ -251,7 +300,7 @@ def serve_static(path):
 
     # 在大小写敏感的文件系统上尝试忽略大小写解析（避免频繁新增挂载）
     resolved = _resolve_case_insensitive(safe_base, path)
-    if resolved and os.path.isfile(resolved):
+    if resolved and os.path.isfile(resolved) and _is_within(safe_base, resolved):
         return send_file(resolved)
 
     return "", 404
@@ -313,6 +362,11 @@ def init_image_dimensions():
         print(f"初始化检查失败: {e}")
 
 
+def sanitize_task_id(raw) -> str:
+    """任务 ID 会被拼进文件名，只保留安全字符"""
+    return re.sub(r"[^0-9A-Za-z_-]", "", str(raw or ""))[:64]
+
+
 # ✅ 图片上传（方案 B 的核心）
 @app.route("/upload-image", methods=["POST"])
 def upload_image():
@@ -321,8 +375,14 @@ def upload_image():
         return jsonify({"status": "error", "error": "no_file"}), 400
         
     file = request.files["file"]
+    raw_name = file.filename or ""
     task_name = request.form.get("taskName", "")
-    task_id = request.form.get("taskId", "")
+    task_id = sanitize_task_id(request.form.get("taskId", ""))
+
+    # 扩展名白名单：不允许任意文件落进 pic/ 后被同源静态服务访问
+    ext = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
+    if ext not in ALLOWED_IMAGE_EXTS:
+        return jsonify({"status": "error", "error": "unsupported_type"}), 400
 
     # --- 保留你原本的获取任务名逻辑 ---
     if not task_name and task_id:
@@ -343,21 +403,19 @@ def upload_image():
         name = unicodedata.normalize('NFKC', name)
         name = name.strip()
         name = re.sub(r"\s+", "_", name)
-        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name)
+        # 除了文件系统非法字符，还要去掉会破坏 URL 的 # % & +
+        name = re.sub(r'[<>:"/\\|?*#%&+\x00-\x1f]', "", name)
         return name[:200]
 
-    sanitized = sanitize_filename(task_name) or str(task_id)
+    sanitized = sanitize_filename(task_name) or task_id
     pic_dir = os.path.join(BASE_DIR, "pic")
     os.makedirs(pic_dir, exist_ok=True)
 
     # --- 保留你原本的带时间戳文件名生成逻辑 ---
     ts = int(time.time() * 1000)
-    if "." in file.filename:
-        ext = file.filename.rsplit(".", 1)[-1]
-        filename = f"{task_id}_{ts}.{ext}" if sanitized == str(task_id) else f"{sanitized}_{task_id}_{ts}.{ext}"
-    else:
-        filename = f"{task_id}_{ts}"
-        
+    filename = f"{sanitized}_{task_id}_{ts}.{ext}" if task_id else f"{sanitized}_{ts}.{ext}"
+    filename = filename.lstrip("_")
+
     filepath = os.path.join(pic_dir, filename)
     file.save(filepath)
 
@@ -382,8 +440,9 @@ def _safe_move_image(src_rel: str, dst_dir: str, allowed_prefix: str):
     if not src_rel:
         return None, "no_path"
 
-    # 仅允许特定前缀的路径
-    if not src_rel.startswith(allowed_prefix):
+    # 仅允许特定前缀的路径（大小写不敏感：pic/ 与 RecyclePic/ 的历史写法都认）
+    prefix_root = allowed_prefix.split('/')[0]
+    if not src_rel.replace("\\", "/").lower().startswith(prefix_root.lower() + "/"):
         return None, "invalid_path"
 
     basename = os.path.basename(src_rel)
@@ -396,8 +455,8 @@ def _safe_move_image(src_rel: str, dst_dir: str, allowed_prefix: str):
     dst_full = os.path.join(dst_dir_abs, basename)
 
     # 安全校验：源文件需位于 BASE_DIR 内，并且符合前缀目录
-    allowed_base = os.path.abspath(os.path.join(BASE_DIR, allowed_prefix.split('/')[0]))
-    if not src_full.startswith(allowed_base):
+    allowed_base = os.path.abspath(os.path.join(BASE_DIR, prefix_root))
+    if not os.path.normcase(src_full).startswith(os.path.normcase(allowed_base) + os.sep):
         return None, "invalid_source_root"
 
     if not os.path.exists(src_full):
@@ -426,56 +485,80 @@ def move_image_to_recycle():
 def restore_image_from_recycle():
     data = request.get_json(force=True, silent=True) or {}
     path = data.get('path') or data.get('filename')
-    new_path, err = _safe_move_image(path, os.path.join(BASE_DIR, 'pic'), 'recyclepic/')
+    new_path, err = _safe_move_image(path, os.path.join(BASE_DIR, 'pic'), 'RecyclePic/')
     if err:
         status = 400 if err in {"invalid_path", "invalid_basename", "invalid_source_root"} else (404 if err == "not_found" else 500)
         return jsonify({"status": "error", "error": err, "newPath": path}), status
     return jsonify({"status": "ok", "moved": True, "newPath": new_path})
 
 
-def cleanup_unused_images(data):
-    # 获取所有任务正在使用的图片路径（pic/ 与 recyclepic/ 均计入）
-    used_images = set()
-    for task in data.get("tasks", []):
-        if 'image' in task and task.get('image'):
-            img = task.get('image')
-            if isinstance(img, str) and (img.startswith("pic/") or img.startswith("recyclepic/")):
-                used_images.add(img)
+def _image_key(path) -> str:
+    """图片引用比较用的键：统一正斜杠、去掉前导 ./ 与 /、转小写。
 
-    # 同时检查回收站中的任务，避免误删仅在回收站中引用的图片
-    if os.path.exists(RECYCLE_FILE):
+    数据里历史上出现过 pic/ 与 RecyclePic/、recyclepic/ 混用的情况，
+    统一成小写键比较，避免因为大小写差异把在用的图片误判成孤儿。
+    """
+    p = str(path).replace("\\", "/")
+    if p.startswith("./"):
+        p = p[2:]
+    p = p.lstrip("/")
+    return p.lower()
+
+
+def _collect_used_image_keys(data, recycle=None):
+    used = set()
+    for task in data.get("tasks", []) or []:
+        img = task.get("image") if isinstance(task, dict) else None
+        if isinstance(img, str) and img:
+            key = _image_key(img)
+            if key.startswith("pic/") or key.startswith("recyclepic/"):
+                used.add(key)
+    if recycle is None and os.path.exists(RECYCLE_FILE):
         try:
-            with open(RECYCLE_FILE, 'r', encoding='utf-8') as rf:
-                recycle = json.load(rf)
-            for t in recycle.get('tasks', []) if isinstance(recycle, dict) else recycle:
-                if 'image' in t and t.get('image'):
-                    img = t.get('image')
-                    if isinstance(img, str) and (img.startswith("pic/") or img.startswith("recyclepic/")):
-                        used_images.add(img)
+            with open(RECYCLE_FILE, "r", encoding="utf-8") as rf:
+                loaded = json.load(rf)
+            recycle = loaded.get("tasks", []) if isinstance(loaded, dict) else loaded
         except Exception:
-            pass
+            recycle = []
+    for task in recycle or []:
+        img = task.get("image") if isinstance(task, dict) else None
+        if isinstance(img, str) and img:
+            key = _image_key(img)
+            if key.startswith("pic/") or key.startswith("recyclepic/"):
+                used.add(key)
+    return used
 
-    # 清理 pic 目录未使用的文件
-    pic_dir = os.path.join(BASE_DIR, "pic")
-    if os.path.isdir(pic_dir):
-        for filename in os.listdir(pic_dir):
-            path = f"pic/{filename}"
-            if path not in used_images:
-                try:
-                    os.remove(os.path.join(pic_dir, filename))
-                except Exception:
-                    pass
 
-    # 清理 recyclepic 目录未使用的文件
-    recycle_dir = os.path.join(BASE_DIR, "recyclepic")
-    if os.path.isdir(recycle_dir):
-        for filename in os.listdir(recycle_dir):
-            path = f"recyclepic/{filename}"
-            if path not in used_images:
-                try:
-                    os.remove(os.path.join(recycle_dir, filename))
-                except Exception:
-                    pass
+def cleanup_unused_images(data):
+    """回收未被引用的孤儿图片。
+
+    只删除「宽限期以外」的文件：刚上传、尚未随任务保存的图片，
+    以及取消编辑后删除失败的图片，在宽限期内一律放过。
+    """
+    used_images = _collect_used_image_keys(data)
+    now = time.time()
+
+    for dir_path, prefix in (
+        (os.path.join(BASE_DIR, "pic"), "pic/"),
+        (RECYCLE_PIC_DIR, "RecyclePic/"),
+    ):
+        if not os.path.isdir(dir_path):
+            continue
+        for filename in os.listdir(dir_path):
+            full_path = os.path.join(dir_path, filename)
+            if not os.path.isfile(full_path):
+                continue
+            if _image_key(prefix + filename) in used_images:
+                continue
+            try:
+                if now - os.path.getmtime(full_path) < IMAGE_GC_GRACE_SECONDS:
+                    continue  # 宽限期内的新文件不回收
+            except OSError:
+                continue
+            try:
+                os.remove(full_path)
+            except Exception:
+                pass
 
 
 @app.route('/delete-image', methods=['POST'])
@@ -489,7 +572,7 @@ def delete_image():
     pic_dir = os.path.abspath(os.path.join(BASE_DIR, 'pic'))
     basename = os.path.basename(path)
     full_path = os.path.abspath(os.path.join(pic_dir, basename))
-    if not full_path.startswith(pic_dir):
+    if not _is_within(pic_dir, full_path):
         return jsonify({'status': 'error', 'error': 'invalid_path'}), 400
 
     if not os.path.exists(full_path):
