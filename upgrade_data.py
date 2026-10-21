@@ -55,6 +55,7 @@ TASK_TIME_FIELDS = [
     "abandonedAt",
     "createdAt",
     "pausedAt",
+    "deletedAt",
 ]
 
 # 暂停历史里的时间字段
@@ -180,6 +181,7 @@ def main():
 
     print("=" * 70)
     print("时间格式升级：统一为 ISO UTC")
+    print("模式：写入（写入前自动备份）")
     print("=" * 70)
 
     grand_total = 0

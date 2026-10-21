@@ -48,6 +48,10 @@
   const parse = (value) => {
     if (value instanceof Date) return value;
     if (value == null) return null;
+    // 毫秒时间戳：`Date.parse(x)` / `getTime()` 的结果。
+    // 重构后解析入口从 `new Date(x)` 换成这里，必须补上数字分支，
+    // 否则 `parseOrInvalid(ms)` 会得到 Invalid Date。
+    if (typeof value === "number") return valid(new Date(value)) ? new Date(value) : null;
     const s = String(value).trim();
     if (!s) return null;
 

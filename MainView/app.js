@@ -1012,6 +1012,7 @@ class TaskManager {
     if (totalPausedDays !== undefined) result.totalPausedDays = totalPausedDays;
     if (pauseHistory !== undefined) result.pauseHistory = pauseHistory;
     if (task.pausePreDeadline !== undefined) result.pausePreDeadline = task.pausePreDeadline;
+    if (task.pauseLastExtendDate !== undefined) result.pauseLastExtendDate = task.pauseLastExtendDate;
     // __duration/__endDate/__startDate 由 BarView 运行时计算，不持久化
     return result;
   }
@@ -1781,7 +1782,10 @@ class TaskManager {
     // 全量链重算：修正因数据过期导致的所有链式任务日期偏差
     this.scanAllChains();
     // 暂停实时预览：将活跃暂停自动应用为 deadline 延期
-    this.applyCurrentPausePreview();
+    // 必须落盘：锚点推进后若不同步保存，下次加载会把同一段差额再算一遍
+    if (this.applyCurrentPausePreview()) {
+      await this.saveAllData();
+    }
     // 加载时若回填了统计缺失字段（sourceTaskName/typeName），写回 Statistics.json 固化修复
     if (this._statisticsBackfilled) {
       this._statisticsBackfilled = false;
@@ -1808,35 +1812,18 @@ class TaskManager {
     return changed;
   }
   // ── 暂停实时预览 ──
-  // 将当前活跃的暂停（paused=true）视为已发生的延期，自动延长 deadline
-  // 对所有暂停任务生效，幂等（使用 pausePreDeadline 作为基准）
+  // 锚点模型：把「今天 − pauseLastExtendDate」的差额追加到 deadline
+  // 同一天反复调用无副作用，用户手改的 deadline 即为新起点
   applyCurrentPausePreview() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
     const tasks = Array.isArray(this.tasks) ? this.tasks : [];
-    tasks.forEach(task => {
-      if (!task || !task.paused || !task.pausedAt) return;
-      const pausedAt = window.taskTime.parseOrInvalid(task.pausedAt);
-      pausedAt.setHours(0, 0, 0, 0);
-      const pausedDays = Math.floor((today - pausedAt) / 86400000);
-      if (pausedDays < 1) return;
-      // 首次：保存原始 deadline 作为不随预览变化的基准
-      if (!task.pausePreDeadline && task.deadline) {
-        task.pausePreDeadline = task.deadline;
-      }
-      if (task.pausePreDeadline) {
-        const baseDeadline = window.taskTime.parseOrInvalid(task.pausePreDeadline);
-        if (!isNaN(baseDeadline.getTime())) {
-          const extendedDeadline = window.taskTime.parseOrInvalid(baseDeadline);
-          extendedDeadline.setDate(extendedDeadline.getDate() + pausedDays);
-          const formatted = window.taskTime.formatForStorage(extendedDeadline);
-          if (task.deadline !== formatted) {
-            task.deadline = formatted;
-            this.adjustChainFrom(task);
-          }
-        }
+    let changed = false;
+    tasks.forEach((task) => {
+      if (window.taskCardShared.applyPauseExtension(task)) {
+        changed = true;
+        this.adjustChainFrom(task);
       }
     });
+    return changed;
   }
 
   resetTimerOnPageLoad() {
@@ -2226,7 +2213,7 @@ class TaskManager {
       payment, paymentMode, paymentRecords,
       abandoned: abandonedChecked, abandonedAt: formAbandonedAt,
       actualHours, nodes, image, dependencyType, lineTaskId: fdLineTaskId,
-      autoSchedule, autoCalcEnd, bufferDays, actualStartTime,
+      autoSchedule, autoCalcEnd, bufferDays, actualStartTime, urgentA,
     } = fd;
 
     let lineTaskId = fdLineTaskId;
@@ -2291,6 +2278,11 @@ class TaskManager {
       task.startTime = starttime;
       task.dependencyType = dependencyType; task.lineTaskId = newParentId;
       task.autoSchedule = autoSchedule; task.autoCalcEnd = autoCalcEnd;
+      // 加急：与链式自动推导共用 urgentA，勾选框是它的显式编辑入口
+      task.urgentA = urgentA;
+      if (fd.accelerateDismissedFor !== undefined) {
+        task.accelerateDismissedFor = fd.accelerateDismissedFor;
+      }
       task.bufferDays = bufferDays; task.actualStartTime = actualStartTime || null;
       task.deadline = deadline; task.completedAt = completedAtInput || null;
       task.estimatedHours = estimatedHours; task.estimatedDay = estimatedDay;
@@ -2353,6 +2345,7 @@ class TaskManager {
         createdAt: new Date().toISOString(),
         actualStartTime: actualStartTime || null,
         dependencyType, lineTaskId, autoSchedule, autoCalcEnd, bufferDays,
+        urgentA,
       };
       if (fd.w && fd.h) { task.w = fd.w; task.h = fd.h; }
       if (linkMode === 'insert') conflictSiblings.forEach(s => { s.lineTaskId = task.id; });
@@ -2392,6 +2385,14 @@ class TaskManager {
     if (!this.serverOnline) {
       alert("服务端已关闭，无法添加或编辑任务");
       return;
+    }
+    // 进编辑态前先结算暂停延期，保证弹窗里看到的就是当前截止日
+    if (taskId) {
+      const target = (this.tasks || []).find((t) => t.id === taskId);
+      if (target && window.taskCardShared.applyPauseExtension(target)) {
+        this.adjustChainFrom(target);
+        this.saveAllData();
+      }
     }
     this.editingTaskId = taskId; // 向后兼容 — onSave 中可直接使用 editingId 参数
     if (this.modalController) {
@@ -3244,6 +3245,8 @@ class TaskManager {
   // 该结构保证综合时薪恒 >= 费率（低于 P25 完成时反而更高）
   updatePricingAnalysis() {
     const listEl = document.getElementById("pricing-analysis-list");
+    const summaryEl = document.getElementById("pricing-summary");
+    const captionEl = document.getElementById("pricing-caption");
     const emptyEl = document.getElementById("pricing-analysis-empty");
     if (!listEl) return;
     const esc = (s) =>
@@ -3253,6 +3256,8 @@ class TaskManager {
         .replace(/>/g, "&gt;");
     const round1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
     const money = (v) => (Number.isFinite(v) ? `¥${Math.round(v)}` : "—");
+    const yuan = (v) => (Number.isFinite(v) ? String(Math.round(v)) : "—");
+    const hour = (v) => (Number.isFinite(v) ? String(round1(v)) : "—");
     const types = (this.statistics && this.statistics.types) || {};
     const rows = [];
     Object.entries(types).forEach(([typeId, entry]) => {
@@ -3267,10 +3272,37 @@ class TaskManager {
     });
     if (rows.length === 0) {
       listEl.innerHTML = "";
+      if (summaryEl) summaryEl.innerHTML = "";
+      if (captionEl) captionEl.style.display = "none";
       if (emptyEl) emptyEl.style.display = "";
       return;
     }
     if (emptyEl) emptyEl.style.display = "none";
+    if (captionEl) captionEl.style.display = "";
+    // 概览：类型数 + 跨类型的费率 / 报价区间（单类型时退化为单值）
+    const rates = rows.map((r) => r.stats.rate).filter(Number.isFinite);
+    const prices = rows.map((r) => r.stats.priceP50).filter(Number.isFinite);
+    const span = (list, fmt) => {
+      if (list.length === 0) return "—";
+      const min = Math.min(...list);
+      const max = Math.max(...list);
+      return min === max ? fmt(min) : `${fmt(min)}–${fmt(max)}`;
+    };
+    if (summaryEl) {
+      summaryEl.innerHTML = `
+        <div class="pricing-summary-item" data-metric="types">
+          <span class="pricing-summary-label">分析类型</span>
+          <span class="pricing-summary-value">${rows.length}<span class="pricing-summary-unit">类</span></span>
+        </div>
+        <div class="pricing-summary-item" data-metric="rate">
+          <span class="pricing-summary-label">费率区间</span>
+          <span class="pricing-summary-value">${span(rates, round1)}<span class="pricing-summary-unit">¥/h</span></span>
+        </div>
+        <div class="pricing-summary-item" data-metric="price">
+          <span class="pricing-summary-label">报价区间</span>
+          <span class="pricing-summary-value">${span(prices, money)}</span>
+        </div>`;
+    }
     listEl.innerHTML = rows
       .map(({ name, stats, n }) => {
         // 全部取历史实际数据的分位值（不做任何理论换算）：
@@ -3285,29 +3317,41 @@ class TaskManager {
         const p375 = enough ? stats.priceP375 : stats.priceP50;
         const p50 = stats.priceP50;
         const p75 = enough ? stats.priceP75 : stats.priceP50;
-        const hoursText = enough
-          ? `${round1(h25)} / ${round1(h375)} / ${round1(h50)} / ${round1(h75)} h`
-          : `${round1(h50)} h`;
-        const priceText = Number.isFinite(p50)
-          ? enough
-            ? `${money(p25)} / ${money(p375)} / ${money(p50)} / ${money(p75)}`
-            : money(p50)
-          : "—";
-        const rateText = Number.isFinite(stats.rate) ? round1(stats.rate) : null;
-        return `<div class="p-2 mb-1" style="border-bottom:1px solid rgba(0,0,0,.06);">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-semibold truncate">${esc(name)}</span>
-            <span class="text-xs shrink-0" style="opacity:.5;">${n} 张</span>
+        const rateText = Number.isFinite(stats.rate)
+          ? `费率 ¥${round1(stats.rate)}/h`
+          : "费率 —";
+        return `<article class="pricing-card">
+          <div class="pricing-card-head">
+            <span class="pricing-name">
+              <i class="pricing-dot"></i>
+              <span class="pricing-name-text">${esc(name)}</span>
+            </span>
+            <span class="pricing-sample">${n} 张</span>
           </div>
-          <div class="text-xs mt-1">参考工时 ${hoursText}</div>
-          <div class="text-xs mt-1">参考价 ${priceText}</div>
-          <div class="text-xs mt-1" style="opacity:.45;">${
-            enough ? "分位 P25 / P37.5 / P50 / P75" : "样本不足，取中位数"
-          }</div>
-          <div class="text-xs mt-1" style="opacity:.5;">费率 ${
-            rateText !== null ? `¥${rateText}/h` : "—"
-          }</div>
-        </div>`;
+          <div class="pricing-hero">
+            <span class="pricing-hero-label">参考报价</span>
+            <span class="pricing-hero-value">${money(p50)}</span>
+            <span class="pricing-hero-rate">${rateText}</span>
+          </div>
+          <table class="pricing-table">
+            <thead>
+              <tr><th></th><th>P25</th><th>P37.5</th><th>P50</th><th>P75</th></tr>
+            </thead>
+            <tbody>
+              <tr><th>工时 h</th><td>${hour(h25)}</td><td>${hour(
+          h375
+        )}</td><td>${hour(h50)}</td><td>${hour(h75)}</td></tr>
+              <tr><th>报价 ¥</th><td>${yuan(p25)}</td><td>${yuan(
+          p375
+        )}</td><td>${yuan(p50)}</td><td>${yuan(p75)}</td></tr>
+            </tbody>
+          </table>
+          ${
+            enough
+              ? ""
+              : `<div class="pricing-note">样本不足 4 张，四分位按中位数取值</div>`
+          }
+        </article>`;
       })
       .join("");
   }

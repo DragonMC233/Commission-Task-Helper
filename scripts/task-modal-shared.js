@@ -253,6 +253,7 @@ class TaskModalController {
         const depRadios = document.querySelectorAll('input[name="task-dependency"]');
         const selectLine = document.getElementById("task-line-task");
         const autoScheduleEl = document.getElementById("task-auto-schedule");
+        const urgentEl = document.getElementById("task-urgent");
         const autoCalcEndEl = document.getElementById("task-auto-calc-end");
         const bufferEl = document.getElementById("task-buffer-days");
         const actualStartEl = document.getElementById("task-actual-starttime");
@@ -260,8 +261,9 @@ class TaskModalController {
         const setDepRadio = (val) => {
             depRadios.forEach((r) => { r.checked = r.value === val; });
         };
-        // 文件里存的是 ISO UTC，输入框里显示访问者本地时区的时间
-        const toLocal = (v) => (v ? window.taskTime.toDisplay(v) : "");
+        // 文件里存的是 ISO UTC，输入框里显示访问者本地时区的时间。
+        // datetime-local 不接受纯日期，纯日期任务回填时补 00:00，否则输入框会被清空
+        const toLocal = (v) => (v ? this.formatDateTimeLocal(v) : "");
 
         if (taskId) {
             // ═══ 编辑任务 ═══
@@ -272,6 +274,7 @@ class TaskModalController {
             saveBtn.textContent = "更新";
 
             document.getElementById("task-name").value = task.name;
+            if (urgentEl) urgentEl.checked = !!task.urgentA;
             document.getElementById("task-starttime").value = toLocal(
                 task.startTime || task.starttime || task.startDate || task.deadline || ""
             );
@@ -370,6 +373,7 @@ class TaskModalController {
             saveBtn.textContent = "保存";
 
             document.getElementById("task-name").value = "";
+            if (urgentEl) urgentEl.checked = false;
             const now = new Date();
             const year = now.getFullYear();
             const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -531,6 +535,8 @@ class TaskModalController {
             ? Math.max(-1, Math.round(Number(bufferDaysInput)))
             : 1;
         const actualStartTime = window.taskTime.formatForStorage(getVal("task-actual-starttime")) || null;
+        // 加急：手动勾选框与链式自动推导共用 urgentA 这一个状态
+        const urgentA = getBool("task-urgent");
         const estimatedHours = parseInt(document.getElementById("task-hours")?.value) || 8;
         const estimatedDayRaw = parseInt(document.getElementById("task-estimated-days")?.value, 10);
         const estimatedDay = Number.isFinite(estimatedDayRaw) && estimatedDayRaw >= 0 ? estimatedDayRaw : 0;
@@ -607,6 +613,9 @@ class TaskModalController {
             image = orig ? orig.image : null;
         }
 
+        // 输入框里是访问者本地的时间，和 startTime / actualStartTime 一样先转 ISO UTC 再写盘
+        const completedAt = window.taskTime.formatForStorage(completedAtInput) || null;
+
         const task = {
             id: this.editingTaskId || this.pendingTaskId || Date.now(),
             name,
@@ -615,7 +624,7 @@ class TaskModalController {
             progress,
             startTime: starttime,
             deadline,
-            completedAt: completedAtInput || null,
+            completedAt,
             estimatedHours,
             payment,
             paymentMode: paymentMode || null,
@@ -636,7 +645,13 @@ class TaskModalController {
             bufferDays,
             actualStartTime: actualStartTime || null,
             estimatedDay,
+            urgentA,
         };
+
+        // 手动取消加急：记下这组判定值，避免自动推导马上又把「是否确认加急」弹回来
+        if (!urgentA && editingTask && editingTask.urgentA && window.taskChain) {
+            task.accelerateDismissedFor = window.taskChain.accelerateSignature(task);
+        }
 
         // 若任务已完成，则将所有节点标记为已完成
         if (task.completed && task.nodes) {
@@ -968,7 +983,7 @@ class TaskModalController {
             '<option value="">不绑定</option>',
             ...this.getLineTaskCandidates(excludeId).map((t) => {
                 const prefix = t.dependencyType === "line" ? "[链式]" : "[独立]";
-                const dl = t.deadline ? `（截止：${(t.deadline || "").slice(0, 10)}）` : "";
+                const dl = t.deadline ? `（截止：${window.taskTime.formatDate(t.deadline)}）` : "";
                 return `<option value="${t.id}" ${String(t.id) === String(selectedId) ? "selected" : ""}>${prefix} ${t.name}${dl}</option>`;
             }),
         ];
@@ -1031,7 +1046,8 @@ class TaskModalController {
                 }
                 const editingTask = this.editingTaskId ? this.dataSource.getTask(this.editingTaskId) : null;
                 const computed = pid ? this.computeAutoStartTime(pid, bufferToUse, editingTask) : null;
-                if (computed) startInput.value = computed;
+                // computeAutoStartTime 返回存储格式（ISO UTC），输入框只接受本地 datetime-local 格式
+                if (computed) startInput.value = this.formatDateTimeLocal(computed);
                 const lock = !!pid; // 无前序时允许手动编辑
                 startInput.readOnly = lock;
                 startInput.classList.toggle("bg-stone-50", lock);
@@ -1290,7 +1306,8 @@ class TaskModalController {
         const autoEndForFill = fillBase ? this.computeAutoDeadline(fillBase, hours, type) : null;
         if (autoCalcEndEl && autoCalcEndEl.checked && fillBase && autoEndForFill) {
             this.deadlineManualOverride = false;
-            if (deadlineEl) deadlineEl.value = autoEndForFill;
+            // computeAutoDeadline 返回存储格式（ISO UTC），输入框只接受本地 datetime-local 格式
+            if (deadlineEl) deadlineEl.value = this.formatDateTimeLocal(autoEndForFill);
             this.syncDeadlineToEstimatedDays();
         }
 
@@ -1636,7 +1653,7 @@ class TaskModalController {
                 return;
             }
             const datetimeVal = datetimeEl?.value;
-            const date = datetimeVal ? datetimeVal.slice(0, 10) : new Date().toISOString().slice(0, 10);
+            const date = datetimeVal ? datetimeVal.slice(0, 10) : window.taskTime.formatDate(new Date());
             const note = noteEl?.value.trim() || "";
             if (!this.tempPaymentRecords) this.tempPaymentRecords = [];
             this.tempPaymentRecords.push({ id: Date.now(), type, amount, date, note });
@@ -1773,9 +1790,39 @@ class TaskModalController {
             if (file) this._uploadImage(file);
         });
 
-        document.getElementById("upload-placeholder")?.addEventListener("click", () => input.click());
-        // 已有预览时点击预览区域也能重新选图（按钮除外）
-        document.getElementById("image-preview-container")?.addEventListener("click", (e) => {
+        // 拖拽上传：整块虚线区域都接收图片
+        const uploadArea = document.getElementById("image-upload-area");
+        if (uploadArea) {
+            const setDragging = (dragging) => {
+                uploadArea.classList.toggle("border-blue-400", dragging);
+                uploadArea.classList.toggle("bg-blue-50", dragging);
+            };
+
+            uploadArea.addEventListener("dragover", (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                setDragging(true);
+            });
+            uploadArea.addEventListener("dragleave", (e) => {
+                // 在子元素之间移动时不算离开
+                if (uploadArea.contains(e.relatedTarget)) return;
+                setDragging(false);
+            });
+            uploadArea.addEventListener("drop", (e) => {
+                e.preventDefault();
+                setDragging(false);
+                const file = e.dataTransfer.files[0];
+                if (!file) return;
+                if (!file.type.startsWith("image/")) {
+                    this.showMessage("只能上传图片文件");
+                    return;
+                }
+                this._uploadImage(file);
+            });
+        }
+
+        // 点击虚线区域任意位置都能选图（已有预览时即为重新选图，删除按钮除外）
+        uploadArea?.addEventListener("click", (e) => {
             if (e.target.closest("#remove-image")) return;
             input.click();
         });
@@ -2094,7 +2141,16 @@ class TaskModalController {
       <h2 id="modal-title" class="text-xl font-bold text-stone-800 mb-4">添加新任务</h2>
 
       <div class="mb-4">
-        <label class="block text-sm font-medium text-stone-700 mb-1">任务名称</label>
+        <div class="flex items-center justify-between text-sm font-medium text-stone-700 mb-1">
+          <label for="task-name">任务名称</label>
+          <!-- 加急：读写链式同款 urgentA，自动推导（实际开始早于计划）与手工勾选控制的是同一个状态 -->
+          <div id="task-urgent-wrap" class="inline-flex items-center gap-2">
+            <label for="task-urgent" class="text-sm text-stone-700 cursor-pointer select-none">加急</label>
+            <label class="inline-flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" id="task-urgent" class="h-4 w-4" data-testid="task-urgent-checkbox">
+            </label>
+          </div>
+        </div>
         <input type="text" id="task-name"
           class="w-full px-3 py-2 border border-stone-300 rounded-lg focus:outline-none focus:ring-2 use-base-ring"
           placeholder="输入任务名称" data-testid="task-name-input" data-scrapbook-input-value="">

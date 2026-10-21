@@ -99,7 +99,9 @@
     }
     if (qIdx === -1) return { newLineTaskId: null, orderedPreds };
     const Q = orderedPreds[qIdx];
-    const gapDays = (actualStart - parseLocalDate(Q.deadline).getTime()) / 86400000;
+    // 前序没有截止日期时视为间隔无限，按 gap 超限处理，避免读 null 崩溃
+    const qDeadline = parseLocalDate(Q.deadline);
+    const gapDays = qDeadline ? (actualStart - qDeadline.getTime()) / 86400000 : Infinity;
     if (gapDays <= BRANCH_GAP_DAYS) return { newLineTaskId: Q.id, orderedPreds };
     return { newLineTaskId: qIdx > 0 ? orderedPreds[qIdx - 1].id : null, orderedPreds };
   };
@@ -209,7 +211,9 @@
    */
   const applyChainToSuccessor = (parent, child, ctx = {}, bufferDays) => {
     const result = { startChanged: false, deadlineChanged: false };
-    if (!child || child.completed || !child.autoSchedule) return result;
+    // 暂停中的任务由暂停延期接管截止日，若仍按前序重排会把手改的日期覆盖回去，
+    // 恢复后自然重新参与链式排期。
+    if (!child || child.completed || child.paused) return result;
 
     const prevStart = child.startTime || child.starttime || "";
     const prevDeadline = child.deadline || "";
@@ -220,6 +224,33 @@
       child
     );
     if (!newStartStr) return result;
+
+    // 手动排期（autoSchedule=false）：只守下界。前序延后到它开始之后才整体后推，
+    // 前序正常或提前时不前移，免得把用户手拖过的计划改掉。
+    if (!child.autoSchedule) {
+      const curStart = parseLocalDate(prevStart);
+      const needStart = parseLocalDate(newStartStr);
+      if (
+        !curStart || Number.isNaN(curStart.getTime()) ||
+        !needStart || Number.isNaN(needStart.getTime())
+      ) return result;
+      const pushDays = daysBetween(curStart, needStart);
+      if (!pushDays || pushDays <= 0) return result;
+      child.startTime = newStartStr;
+      result.startChanged = true;
+      if (ctx.afterChange) ctx.afterChange(child, "startTime");
+      // 截止日跟着平移，保持原有工期
+      const curDeadline = prevDeadline ? parseLocalDate(prevDeadline) : null;
+      if (curDeadline && !Number.isNaN(curDeadline.getTime())) {
+        const shifted = addDays(curDeadline, pushDays);
+        child.deadline = hasExplicitTime(prevDeadline)
+          ? toStorageStr(shifted)
+          : formatDate(shifted);
+        result.deadlineChanged = true;
+        if (ctx.afterChange) ctx.afterChange(child, "deadline");
+      }
+      return result;
+    }
 
     // 加急任务已提前实际开工，截止日基于 actualStartTime；其余基于计划 startTime
     const deadlineBase =

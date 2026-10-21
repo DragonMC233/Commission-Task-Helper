@@ -1,5 +1,5 @@
 (() => {
-  // 时间处理统一走 task-time.js（固定 UTC+8）
+  // 时间处理统一走 task-time.js（按访问者设备本地时区显示）
   const time = window.taskTime;
 
   const getDaysRemaining = (deadline) => {
@@ -506,19 +506,77 @@
     }
   }
 
+  /** 按原值形态写回：带时刻写 ISO UTC，纯日期保持纯日期 */
+  const writeDatePreservingForm = (dateObj, original) =>
+    time.hasExplicitTime(original)
+      ? time.formatForStorage(dateObj)
+      : time.formatDate(dateObj);
+
+  /** 把日期挪到 target 那天，时分秒沿用原值 */
+  const moveToDay = (value, target) => {
+    const p = time.parts(value);
+    const t = time.parts(target);
+    if (!p || !t) return value;
+    return writeDatePreservingForm(
+      time.make(t.year, t.month, t.day, p.hour, p.minute, p.second),
+      value
+    );
+  };
+
+  /**
+   * 暂停延期（锚点模型）
+   *
+   * `pauseLastExtendDate` 记录「本次暂停已经延到哪一天」。每次只把
+   * 「今天 − 锚点」的差额追加到当前 deadline，再推进锚点：
+   *   - 同一天反复调用：差额为 0，无副作用
+   *   - 用户手改 deadline：新值即新起点，不会被基准覆盖
+   *   - 多日未打开：一次补齐全部差额
+   *
+   * 返回是否发生改动（调用方据此决定是否落盘）
+   */
+  const applyPauseExtension = (task, now = new Date()) => {
+    if (!task || !task.paused || task.completed || task.abandoned) return false;
+    const today = time.toDateOnly(now);
+    if (!today) return false;
+    let changed = false;
+    // 老数据没有锚点：以今天为起点，不补历史
+    if (!task.pauseLastExtendDate) {
+      task.pauseLastExtendDate = time.formatDate(today);
+      changed = true;
+    } else {
+      // 按「今天 − 锚点」的差额追加，然后推进锚点
+      const diff = time.daysBetween(task.pauseLastExtendDate, today);
+      if (diff > 0) {
+        const base = time.parse(task.deadline);
+        if (base) {
+          task.deadline = writeDatePreservingForm(time.addDays(base, diff), task.deadline);
+        }
+        task.pauseLastExtendDate = time.formatDate(today);
+        changed = true;
+      }
+    }
+    // 不变式：暂停期间不算逾期，截止日不得早于今天
+    const current = time.parse(task.deadline);
+    if (current && time.daysBetween(current, today) > 0) {
+      task.deadline = moveToDay(task.deadline, today);
+      changed = true;
+    }
+    return changed;
+  };
+
   /**
    * 暂停委托（只改任务数据，不碰 UI）
    *
-   * 首次暂停时记下原始 deadline 作为 pausePreDeadline：恢复时以它为基准外推，
-   * 避免与「暂停实时预览」在同一次暂停上重复外推。
+   * 锚点从这里开始计：暂停当天不延，第二天起每天 +1。
    */
   const pauseTaskData = (task, now = new Date()) => {
     if (!task) return false;
-    if (task.deadline && !task.pausePreDeadline) {
-      task.pausePreDeadline = task.deadline;
-    }
     task.paused = true;
     task.pausedAt = now.toISOString();
+    const today = time.toDateOnly(now);
+    task.pauseLastExtendDate = today
+      ? time.formatDate(today)
+      : time.formatDate(now);
     if (!Array.isArray(task.pauseHistory)) task.pauseHistory = [];
     task.pauseHistory.push({ pausedAt: task.pausedAt });
     return true;
@@ -529,15 +587,13 @@
    */
   const resumeTaskData = (task, now = new Date()) => {
     if (!task || !task.paused) return null;
+    // 先把当天该延的天数补齐，再结算，保证暂停期间的每一天都被计入
+    applyPauseExtension(task, now);
     const pausedAt = time.parse(task.pausedAt);
     if (!pausedAt) return null;
     const pausedMs = now.getTime() - pausedAt.getTime();
     task.totalPausedDays = (task.totalPausedDays || 0) + pausedMs / 86400000;
-    // 以 pausePreDeadline 为基准外推，避免与实时预览双计
-    const baseDeadline = time.parse(task.pausePreDeadline || task.deadline);
-    if (baseDeadline) {
-      task.deadline = time.formatForStorage(new Date(baseDeadline.getTime() + pausedMs));
-    }
+    task.pauseLastExtendDate = undefined;
     task.pausePreDeadline = undefined;
     // 回填本次暂停的恢复时间
     if (Array.isArray(task.pauseHistory) && task.pauseHistory.length > 0) {
@@ -635,6 +691,7 @@
     TaskTimer,
     getTimerIcon,
     getTimerLabel,
+    applyPauseExtension,
     pauseTaskData,
     resumeTaskData,
     // 计时结束对话框（两个视图共用）

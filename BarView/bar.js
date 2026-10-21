@@ -226,18 +226,8 @@
     } else if (!task.completed && today && safeEnd < today) {
       safeEnd = today;
     }
-    // 暂停实时预览：当前活跃暂停延伸 __endDate
-    if (task.paused && task.pausedAt) {
-      const today2 = toDateOnly(new Date());
-      const pD2   = toDateOnly(task.pausedAt);
-      const pD2next = pD2 ? addDays(pD2, 1) : null; // 暂停日当天算工作日，次日才开始 gap
-      if (today2 && pD2next && today2 > pD2next) {
-        const extraDays = daysBetween(pD2next, today2);
-        const extended  = window.taskTime.parseOrInvalid(safeEnd);
-        extended.setDate(extended.getDate() + extraDays);
-        safeEnd = extended;
-      }
-    }
+    // 暂停延期已由 deadline 本体承担（applyPauseExtension），此处不再叠加，
+    // 否则「逾期拉到今天」会和暂停天数重复计算。
     return {
       ...task,
       __startDate: start,
@@ -405,27 +395,21 @@
     // allowing later tasks to fill gaps between earlier tasks on the same row.
     // Chains are placed as contiguous blocks of rows to stay visually grouped,
     // but independent tasks can reuse gap space in any row.
-    const rowIntervals = []; // rowIntervals[i] = [{s, e}, ...] per row
+    //
+    // 填空隙的前提是「放得下且不挤」：同一行的两条不同任务之间要真空出
+    // MIN_ROW_GAP_MS，否则 1 天级别的短任务会紧贴链式任务挤成一团。
+    // 同一条链上的相邻节点本来就连成一体，不额外留间距。
+    const rowIntervals = []; // rowIntervals[i] = [{s, e, id}, ...] per row
     state.rows.clear();
     const byId = new Map(state.tasks.map((t) => [String(t.id), t]));
 
-    // Check if interval [s, e] fits in a row without overlapping existing intervals
-    const fitsInRow = (rowIdx, s, e) => {
-      if (rowIdx >= rowIntervals.length) return true;
-      return rowIntervals[rowIdx].every(iv => s >= iv.e || e <= iv.s);
-    };
+    const MIN_ROW_GAP_MS = 2 * 86400000;
 
-    // Add an interval to a row
-    const addToRow = (rowIdx, s, e) => {
-      while (rowIntervals.length <= rowIdx) rowIntervals.push([]);
-      rowIntervals[rowIdx].push({ s, e });
-    };
-
-    // Build groups by scanning state.order and grouping by chain root
-    const groups = [];
-    let lastRoot = null;
-    let curGroup = null;
+    const chainRootById = new Map();
     const getRootIdLocal = (task) => {
+      const key = String(task.id);
+      const cached = chainRootById.get(key);
+      if (cached) return cached;
       const seen = new Set();
       let cur = task;
       while (cur && cur.lineTaskId) {
@@ -435,8 +419,40 @@
         if (!parent) break;
         cur = parent;
       }
-      return String((cur && cur.id) || task.id);
+      const rootId = String((cur && cur.id) || task.id);
+      chainRootById.set(key, rootId);
+      return rootId;
     };
+
+    /** 两条任务之间必须留出的空隙：同一条链为 0，其余留 MIN_ROW_GAP_MS */
+    const gapBetween = (a, b) =>
+      getRootIdLocal(a) === getRootIdLocal(b) ? 0 : MIN_ROW_GAP_MS;
+
+    // Check if the task fits in a row without overlapping (or crowding) existing intervals
+    const fitsInRow = (rowIdx, task) => {
+      if (rowIdx >= rowIntervals.length) return true;
+      const s = task.__startDate.getTime();
+      const e = task.__endDate.getTime();
+      return rowIntervals[rowIdx].every((iv) => {
+        const gap = gapBetween(task, byId.get(iv.id));
+        return s >= iv.e + gap || e + gap <= iv.s;
+      });
+    };
+
+    // Add a task interval to a row
+    const addToRow = (rowIdx, task) => {
+      while (rowIntervals.length <= rowIdx) rowIntervals.push([]);
+      rowIntervals[rowIdx].push({
+        s: task.__startDate.getTime(),
+        e: task.__endDate.getTime(),
+        id: String(task.id),
+      });
+    };
+
+    // Build groups by scanning state.order and grouping by chain root
+    const groups = [];
+    let lastRoot = null;
+    let curGroup = null;
 
     state.order.forEach((id) => {
       const task = byId.get(String(id));
@@ -457,6 +473,13 @@
       const bStart = Math.min(...b.tasks.map((t) => t.__startDate.getTime()));
       const aIsChain = a.tasks.length > 1;
       const bIsChain = b.tasks.length > 1;
+      // 加急（urgentA）的独立任务：只比其它独立任务靠前，不越过链式任务
+      const aUrgent = !aIsChain && a.tasks.some((t) => t.urgentA);
+      const bUrgent = !bIsChain && b.tasks.some((t) => t.urgentA);
+      if (aUrgent !== bUrgent) {
+        const rivalIsChain = aUrgent ? bIsChain : aIsChain;
+        if (!rivalIsChain) return aUrgent ? -1 : 1;
+      }
       const MAX_BOOST_DAYS = 3650; // 上限约 10 年，实际无限制
       const BOOST_PER_NODE_DAYS = 180; // 每个链节点提供半年加成
       const aBoostDays = aIsChain ? Math.min(MAX_BOOST_DAYS, a.tasks.length * BOOST_PER_NODE_DAYS) : 0;
@@ -508,11 +531,6 @@
       const localOrder = [rootLocalIndex, ...Array.from({ length: localRows.length }, (_, i) => i).filter(i => i !== rootLocalIndex)];
       const numLocalRows = localRows.length;
 
-      // Compute intervals per local row
-      const localIvs = localRows.map(lr =>
-        lr.map(t => ({ s: t.__startDate.getTime(), e: t.__endDate.getTime() }))
-      );
-
       // Find first starting global row where ALL local rows fit in a contiguous block
       const maxTry = rowIntervals.length + numLocalRows;
       let bestStart = maxTry; // fallback: append at end
@@ -520,9 +538,8 @@
         let allFit = true;
         for (let offset = 0; offset < numLocalRows; offset++) {
           const globalRow = startRow + offset;
-          const ivs = localIvs[localOrder[offset]];
-          for (const iv of ivs) {
-            if (!fitsInRow(globalRow, iv.s, iv.e)) {
+          for (const t of localRows[localOrder[offset]]) {
+            if (!fitsInRow(globalRow, t)) {
               allFit = false;
               break;
             }
@@ -540,7 +557,7 @@
         const globalRow = bestStart + offset;
         localRows[localIndex].forEach(t => {
           state.rows.set(String(t.id), globalRow);
-          addToRow(globalRow, t.__startDate.getTime(), t.__endDate.getTime());
+          addToRow(globalRow, t);
         });
       });
     });
@@ -1011,6 +1028,9 @@
             const segBar = document.createElement("div");
             segBar.className    = bar.className;
             segBar.dataset.id   = String(task.id);
+            // 只有最后一段的右边缘才是真正的截止日，前面的段右边缘是暂停间隙
+            segBar.dataset.lastSeg = idx === segs.length - 1 ? "1" : "0";
+            segBar.dataset.firstSeg = idx === 0 ? "1" : "0";
             segBar.title        = fullTitle;
             segBar.style.left        = `${left + seg.relLeftPx}px`;
             segBar.style.top         = `${top}px`;
@@ -1446,6 +1466,18 @@
 
   const toggleEditMode = async () => {
     const next = !state.editMode;
+    if (next) {
+      // 进编辑态前先结算暂停延期，保证拖拽起点就是当前截止日
+      const changed = await applyPauseDeadlineExtension();
+      if (changed) {
+        state.tasks = state.tasks.map((t) => normalizeTask(t));
+        try {
+          await saveData();
+        } catch (e) {
+          console.warn("pause extension save failed", e);
+        }
+      }
+    }
     state.editMode = next;
     els.btnEdit.classList.toggle("active", state.editMode);
     if (!next) {
@@ -1500,18 +1532,54 @@
     // 防止拖拽过程中选中文本
     document.body.classList.add('barview-no-select');
     const target = e.target;
-    if (target.classList.contains("bar-dot")) {
-      state.drag = {
-        type: target.classList.contains("start") ? "resize-start" : "resize-end",
-        taskIds: [taskId],
-        startX: e.clientX,
-        origin: captureTaskDates([taskId]),
-        lastDeltaDays: 0,
-      };
-      state.drag.undoSnapshot = captureCurrentSnapshot();
-      state.drag.undoSignature = snapshotSignature(state.drag.undoSnapshot);
-      return;
+    const pressedBar = target.closest(".gantt-bar");
+    const dragTask = pressedBar
+      ? state.tasks.find((t) => String(t.id) === String(taskId))
+      : null;
+    // 单段任务没有分段标记，视为既是首段也是末段
+    const segFirst = !!pressedBar && pressedBar.dataset.firstSeg !== "0";
+    const segLast = !!pressedBar && pressedBar.dataset.lastSeg !== "0";
+    // 已有实际开始时间：开头是既成事实，不能靠拖拽改写
+    const hasActualStart = !!(dragTask && dragTask.actualStartTime);
+
+    // 暂停任务的条会被暂停间隙切成多段，每段都带左右圆点、间距又窄，
+    // 12px 的端点点不中就会退化成整条拖动。最后一段的右边缘才是真正的截止日，
+    // 给它开一块更宽的命中区，优先判为拖动截止日。
+    if (pressedBar) {
+      const rect = pressedBar.getBoundingClientRect();
+      const fromRight = rect.right - e.clientX;
+      if (dragTask && dragTask.paused && segLast && rect.width > 80 && fromRight <= 28) {
+        state.drag = {
+          type: "resize-end",
+          taskIds: [taskId],
+          startX: e.clientX,
+          origin: captureTaskDates([taskId]),
+          lastDeltaDays: 0,
+        };
+        state.drag.undoSnapshot = captureCurrentSnapshot();
+        state.drag.undoSignature = snapshotSignature(state.drag.undoSnapshot);
+        return;
+      }
     }
+    if (target.classList.contains("bar-dot")) {
+      const isStartDot = target.classList.contains("start");
+      // 左端只在「首段 + 尚未实际开始」时可改计划开始；
+      // 末段的左圆点是暂停恢复点，中间段的左右圆点都不是任务端点，统一放行到整体拖动
+      if (isStartDot ? (segFirst && !hasActualStart) : segLast) {
+        state.drag = {
+          type: isStartDot ? "resize-start" : "resize-end",
+          taskIds: [taskId],
+          startX: e.clientX,
+          origin: captureTaskDates([taskId]),
+          lastDeltaDays: 0,
+        };
+        state.drag.undoSnapshot = captureCurrentSnapshot();
+        state.drag.undoSignature = snapshotSignature(state.drag.undoSnapshot);
+        return;
+      }
+    }
+    // 已实际开始的任务，开头被钉住，整体平移会改写既成事实，只允许改截止日
+    if (hasActualStart) return;
 
     if (!state.selection.has(taskId)) {
       state.selection = new Set([taskId]);
@@ -1656,6 +1724,8 @@
   };
 
   const handleDragEnd = (e) => {
+    // 先解除禁选：handleDragStart 可能提前 return 而没有建立 state.drag
+    document.body.classList.remove('barview-no-select');
     if (!state.drag) return;
     // Cancel any pending drag render frame
     if (state._dragRafId) {
@@ -1666,6 +1736,15 @@
     if (state.drag.type === "move") {
       applyDragChainOps();
     }
+
+    // 拖过就是手工排期：截止日不再让统计推算；动过开始日期的再停用自动排期。
+    // 只作用于被拖的任务本身。
+    state.drag.taskIds.forEach((id) => {
+      const t = state.tasks.find((x) => String(x.id) === String(id));
+      if (!t) return;
+      t.autoCalcEnd = false;
+      if (state.drag.type !== "resize-end") t.autoSchedule = false;
+    });
 
     if (state.drag.undoSnapshot) {
       const currentSnapshot = captureCurrentSnapshot();
@@ -2415,6 +2494,7 @@
       if (totalPausedDays !== undefined) taskOut.totalPausedDays = totalPausedDays;
       if (pauseHistory !== undefined) taskOut.pauseHistory = pauseHistory;
       if (t.pausePreDeadline !== undefined) taskOut.pausePreDeadline = t.pausePreDeadline;
+      if (t.pauseLastExtendDate !== undefined) taskOut.pauseLastExtendDate = t.pauseLastExtendDate;
       // __duration/__endDate/__startDate 由 normalizeTask 运行时计算，不持久化
       return taskOut;
     });
@@ -2521,6 +2601,18 @@
 
            const resolvedFormData = { ...taskData, type: resolvedType, source: resolvedSource };
            const oldTask = editingId ? state.tasks.find(t => t.id === editingId) : null;
+           // 下面会原地 Object.assign 覆盖编辑对象，所以改动前的值必须先抓成快照
+           const oldSnapshot = oldTask
+             ? {
+                 completed: !!oldTask.completed,
+                 completedAt: oldTask.completedAt ?? null,
+                 completedHours: oldTask.completedHours ?? null,
+                 type: oldTask.type,
+                 actualStartTime: oldTask.actualStartTime ?? null,
+                 startTime: oldTask.startTime || oldTask.starttime || null,
+                 lineTaskId: oldTask.lineTaskId ?? null,
+               }
+             : null;
            let norm;
            if (editingId) {
              const idx = state.tasks.findIndex(t => t.id === editingId);
@@ -2544,13 +2636,35 @@
 
            // Reflow chain successors to pick up changes like bufferDays, deadline, completion
            try {
-             if (oldTask && oldTask.lineTaskId && oldTask.lineTaskId !== norm.lineTaskId) {
-               reflowChainFrom(oldTask.lineTaskId);
+             if (oldSnapshot && oldSnapshot.lineTaskId && oldSnapshot.lineTaskId !== norm.lineTaskId) {
+               reflowChainFrom(oldSnapshot.lineTaskId);
              }
              reflowChainFrom(norm.id);
              if (norm.lineTaskId) reflowChainFrom(norm.lineTaskId);
            } catch (e) {
              console.warn('reflowChainFrom failed', e);
+           }
+
+           // ── 统计：与 MainView 同一口径（完成则写入样本，取消完成或改类型则移除）──
+           // 之前这条路径完全不碰 statistics，弹窗里填完成时间后 Statistics.json 不会更新
+           const newCompleted = !!norm.completed;
+           const newCompletedAt = norm.completedAt ?? null;
+           const newStartKey = `${norm.actualStartTime ?? null}|${norm.startTime || norm.starttime || null}`;
+           const oldStartKey = `${oldSnapshot?.actualStartTime ?? null}|${oldSnapshot?.startTime ?? null}`;
+           if (newCompleted) {
+             const changed =
+               !oldSnapshot ||
+               !oldSnapshot.completed ||
+               oldSnapshot.type !== norm.type ||
+               oldSnapshot.completedAt !== newCompletedAt ||
+               oldSnapshot.completedHours !== (norm.completedHours ?? null) ||
+               oldStartKey !== newStartKey;
+             if (oldSnapshot && oldSnapshot.completed && oldSnapshot.type !== norm.type) {
+               removeStatisticsSample(oldSnapshot.type, norm.id);
+             }
+             if (changed) recordCompletionStatistics(norm);
+           } else if (oldSnapshot && oldSnapshot.completed) {
+             removeStatisticsSample(oldSnapshot.type || norm.type, norm.id);
            }
 
            // 关键：先持久化到 index.json，失败时抛出让 modal 保持打开并提示失败
@@ -3731,7 +3845,11 @@
         if (autoEnd) {
           newDeadline = autoEnd;
         } else if (Number.isFinite(cur.estimatedDay) && cur.estimatedDay >= 0) {
-          newDeadline = formatDateForStorage(addDays(window.taskTime.parseOrInvalid(deadlineBase), cur.estimatedDay));
+          // 手动工期：落到当天 23:59，与 MainView 的同一分支保持一致（不再输出纯日期）
+          const d = window.taskTime.parseOrInvalid(deadlineBase);
+          d.setDate(d.getDate() + cur.estimatedDay);
+          d.setHours(23, 59, 0, 0);
+          newDeadline = window.taskTime.formatForStorage(d);
         } else {
           return;
         }
@@ -3752,34 +3870,14 @@
     return anyChanged;
   };
 
-  // ── 暂停实时预览：延伸暂停中任务的 deadline（供链式传播使用） ──
+  // ── 暂停实时预览：按锚点差额延后 deadline（供链式传播使用） ──
   const applyPauseDeadlineExtension = async () => {
-    const today = toDateOnly(new Date());
-    if (!today) return;
     let anyChanged = false;
     (state.tasks || []).forEach(task => {
-      if (!task || task.completed || !task.paused || !task.pausedAt) return;
-      const pausedAt = toDateOnly(task.pausedAt);
-      if (!pausedAt) return;
-      const pausedDays = daysBetween(pausedAt, today);
-      if (pausedDays < 1) return;
-      // 首次：保存原始 deadline 作为不随预览变化的基准
-      if (!task.pausePreDeadline && task.deadline) {
-        task.pausePreDeadline = task.deadline;
-      }
-      if (task.pausePreDeadline) {
-        const baseDeadline = window.taskTime.parseOrInvalid(task.pausePreDeadline);
-        if (!isNaN(baseDeadline.getTime())) {
-          const extended = window.taskTime.parseOrInvalid(baseDeadline);
-          extended.setDate(extended.getDate() + pausedDays);
-          const formatted = preserveTime(extended, task.pausePreDeadline);
-          if (task.deadline !== formatted) {
-            task.deadline = formatted;
-            anyChanged = true;
-            // 向下游传播延期
-            reflowChainFrom(String(task.id));
-          }
-        }
+      if (window.taskCardShared.applyPauseExtension(task)) {
+        anyChanged = true;
+        // 向下游传播延期
+        reflowChainFrom(String(task.id));
       }
     });
     return anyChanged;
@@ -3831,8 +3929,13 @@
     initModalController();
     let _initNeedsSave = false;
     const _sc = await scanAllChainsOnLoad(); if (_sc === true) _initNeedsSave = true;
-    // 暂停实时预览：在链式扫描之后延伸暂停中任务的 deadline，防止被 reflowChainFrom 覆盖
-    const _ap = await applyPauseDeadlineExtension(); if (_ap === true) _initNeedsSave = true;
+    // 暂停实时预览：在链式扫描之后按锚点差额延后暂停中任务的 deadline，防止被 reflowChainFrom 覆盖
+    const _ap = await applyPauseDeadlineExtension();
+    if (_ap === true) {
+      _initNeedsSave = true;
+      // deadline 变了要重算 __endDate，否则甘特条仍按旧日期绘制
+      state.tasks = state.tasks.map((t) => normalizeTask(t));
+    }
     // 合并保存：无论哪个阶段有变更，只在此处保存一次，避免多次写盘
     if (_initNeedsSave) { try { await saveData(); } catch (e) { console.warn("init saveData failed", e); } }
     // 每次加载重置快照历史；base.tasks 仅存内存，preview.json 不产生双倍开销
